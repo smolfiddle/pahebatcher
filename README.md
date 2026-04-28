@@ -4,8 +4,8 @@ PaheBatcher is a zero-hassle CLI batch downloader for [AnimePahe](https://animep
 
 Built with a modular pipeline architecture: an API scraper feeds into a link resolver, which feeds into a concurrent download manager — all driven via pure CLI flags for quick staging, requiring just an AnimePahe URL to get started.
 
-![First screenshot](https://i.imgur.com/pahebatcher_demo1.png)
-![Second screenshot](https://i.imgur.com/pahebatcher_demo2.png)
+![Screenshot 1](https://i.imgur.com/1Uc0hPo.png)
+![Screenshot 2](https://i.imgur.com/RjKcvRq.png)
 
 ---
 
