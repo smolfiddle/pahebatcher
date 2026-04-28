@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+ENV/
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing
+.pytest_cache/
+test_pahe_batcher.py
+tests/
+
+# Project Specific
+pahe_batcher.db
+pahe_batcher.db-wal
+pahe_batcher.db-shm
+downloads/
+pb_*.ts
+
+# IDEs
+.vscode/
+.idea/
