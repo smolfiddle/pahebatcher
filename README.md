@@ -1,6 +1,6 @@
 # PaheBatcher
 
-PaheBatcher is a zero-hassle CLI batch downloader for [AnimePahe](https://animepahe.ru). It automates episode resolution and parallel downloading — turning a tedious multi-click process into a single terminal command.
+PaheBatcher is a zero-hassle CLI batch downloader for [AnimePahe](https://animepahe.pw). It automates episode resolution and parallel downloading — turning a tedious multi-click process into a single terminal command.
 
 Built with a modular pipeline architecture: an API scraper feeds into a link resolver, which feeds into a concurrent download manager — all driven via pure CLI flags for quick staging, requiring just an AnimePahe URL to get started.
 
