@@ -10,7 +10,6 @@ __pycache__/
 
 # Testing
 .pytest_cache/
-test_pahe_batcher.py
 tests/
 
 # Project Specific

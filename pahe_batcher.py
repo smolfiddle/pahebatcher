@@ -1237,6 +1237,8 @@ class DownloadConfig:
     hls_workers:  int  = HLS_WORKERS
     purge_db:     bool = True
     quality:      int  = 1080
+    export_mode:  bool = False
+    stream_mode:  bool = False
 
 
 class Downloader:
@@ -1736,11 +1738,20 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
     console.print()
     console.print(Rule("[bold white] Download Settings [/bold white]", style="cyan"))
 
-    # ── Output directory ──────────────────────────────────────────────────
-    output_dir = Prompt.ask(
-        "  [cyan]Output directory[/cyan]", default=defaults.output_dir
-    ).strip()
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # ── Action Mode ───────────────────────────────────────────────────────
+    console.print(Panel(
+        "  [bold white]1[/bold white]  [cyan]Download Locally[/cyan]  [dim]· Use internal HLS engine to save .mp4 files[/dim]\n"
+        "  [bold white]2[/bold white]  [cyan]Export Links[/cyan]      [dim]· Get M3U8 URLs + Headers for external downloaders[/dim]\n"
+        "  [bold white]3[/bold white]  [cyan]Stream via MPV[/cyan]    [dim]· Watch episodes now in high quality[/dim]",
+        title="[cyan]Action[/cyan]",
+        border_style="dim cyan",
+        box=box.ROUNDED,
+        padding=(0, 2),
+    ))
+    action_key = Prompt.ask("  [cyan]Select[/cyan]", choices=["1", "2", "3"],
+                            default="1" if not (defaults.export_mode or defaults.stream_mode) else ("2" if defaults.export_mode else "3"))
+    export_mode = (action_key == "2")
+    stream_mode = (action_key == "3")
 
     # ── Quality — single-key picker ───────────────────────────────────────
     _q_default = {360: "1", 720: "2", 1080: "3"}.get(defaults.quality, "3")
@@ -1756,6 +1767,26 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
     q_key   = Prompt.ask("  [cyan]Select[/cyan]", choices=["1", "2", "3"],
                          default=_q_default)
     quality = {1: 360, 2: 720, 3: 1080}[int(q_key)]
+
+    if stream_mode:
+        return DownloadConfig(
+            quality      = quality,
+            stream_mode  = True
+        )
+
+    # ── Output directory ──────────────────────────────────────────────────
+    output_dir = Prompt.ask(
+        "  [cyan]Output directory[/cyan]", default=defaults.output_dir
+    ).strip()
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    if export_mode:
+        # Skip engine-specific configs if exporting
+        return DownloadConfig(
+            output_dir   = output_dir,
+            quality      = quality,
+            export_mode  = True
+        )
 
     # ── Concurrency ───────────────────────────────────────────────────────
     console.print(Panel(
@@ -1895,6 +1926,223 @@ async def _run_batch(episodes: List[EpisodeInfo], cfg: DownloadConfig, db: Vault
             console.print(f"  [yellow]⚠ Could not remove database:[/yellow] {e}")
 
 
+def format_cookies(cookies: List[dict]) -> str:
+    """Format a list of cookie dicts into a standard Cookie header string."""
+    return "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+
+
+async def _run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig):
+    """Resolve links for all episodes and export them to a file."""
+    console.print()
+    console.print(Rule("[bold white] Exporting Links [/bold white]", style="cyan"))
+    
+    results = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold white]{task.description:<46}"),
+        BarColumn(bar_width=None, style="cyan"),
+        MofNCompleteColumn(),
+        console=console,
+        expand=True,
+    ) as progress:
+        task = progress.add_task("Resolving links …", total=len(episodes))
+        
+        for ep in episodes:
+            progress.update(task, description=f"Resolving: {ep.label[:40]}")
+            try:
+                # Use executor because extract_animepahe_stream is synchronous (uses Solver.request)
+                loop = asyncio.get_running_loop()
+                info = await loop.run_in_executor(
+                    None, extract_animepahe_stream, ep.play_url, cfg.quality
+                )
+                
+                cookie_str = format_cookies(info["cookies"])
+                
+                # Construct an FFmpeg command as a convenience
+                ff_cmd = (
+                    f'ffmpeg -headers "User-Agent: {info["user_agent"]}\\r\\n'
+                    f'Referer: {info["referer"]}\\r\\n'
+                    f'Cookie: {cookie_str}\\r\\n" '
+                    f'-i "{info["url"]}" -c copy "Ep_{ep.ep_str}.mp4"'
+                )
+                
+                results.append({
+                    "ep": ep.ep_str,
+                    "title": ep.title or "—",
+                    "url": info["url"],
+                    "ua": info["user_agent"],
+                    "ref": info["referer"],
+                    "cookie": cookie_str,
+                    "ffmpeg": ff_cmd
+                })
+            except Exception as e:
+                console.print(f"  [red]✗ Failed to resolve Ep {ep.ep_str}:[/red] {e}")
+            
+            progress.advance(task)
+
+    if not results:
+        console.print("\n  [red]No links were successfully resolved.[/red]")
+        return
+
+    # Write to file
+    out_file = Path(cfg.output_dir) / "links_export.txt"
+    try:
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write("=" * 80 + "\n")
+            f.write(f" PAHE-BATCHER LINK EXPORT\n")
+            f.write(f" Generated: {time.ctime()}\n")
+            f.write("=" * 80 + "\n\n")
+            
+            for item in results:
+                f.write(f"EPISODE {item['ep']}: {item['title']}\n")
+                f.write(f"  M3U8 URL: {item['url']}\n")
+                f.write(f"  User-Agent: {item['ua']}\n")
+                f.write(f"  Referer: {item['ref']}\n")
+                f.write(f"  Cookie: {item['cookie']}\n")
+                f.write(f"  FFmpeg Command:\n    {item['ffmpeg']}\n")
+                f.write("-" * 40 + "\n\n")
+        
+        console.print()
+        console.print(Panel(
+            f"  [green]✓ Successfully exported [bold]{len(results)}[/bold] links.[/green]\n"
+            f"  [dim]Saved to:[/dim]  [cyan]{out_file}[/cyan]",
+            border_style="green",
+            box=box.ROUNDED,
+        ))
+    except Exception as e:
+        console.print(f"  [red]✗ Failed to write export file:[/red] {e}")
+    finally:
+        Solver.destroy_session()
+
+
+async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: DownloadConfig):
+    """Resolve links and play them with interactive navigation and a live dashboard."""
+    if not shutil.which("mpv"):
+        console.print("\n  [red]✗ MPV not found![/red]")
+        console.print("  [dim]Please install MPV (https://mpv.io) and ensure it is in your PATH.[/dim]")
+        return
+
+    console.print()
+    console.print(Rule("[bold white] Streaming via MPV [/bold white]", style="cyan"))
+    
+    idx = 0
+    while 0 <= idx < len(episodes):
+        ep = episodes[idx]
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn(f"[bold white]({idx+1}/{len(episodes)}) Resolving: Ep {ep.ep_str}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                progress.add_task("resolve", total=None)
+                loop = asyncio.get_running_loop()
+                info = await loop.run_in_executor(
+                    None, extract_animepahe_stream, ep.play_url, cfg.quality
+                )
+                
+                # Dynamic Title Update
+                if info.get("title") and (not ep.title or ep.title == "—"):
+                    new_title = re.sub(r"\s*[|·].*$", "", info["title"]).strip()
+                    new_title = re.sub(r"^Watch\s+.*?\s+Episode\s+\d+\s+Online.*", "", new_title, flags=re.I).strip()
+                    if new_title:
+                        ep.title = new_title
+
+            cookie_str = format_cookies(info["cookies"])
+            
+            cmd = [
+                "mpv",
+                f"--user-agent={info['user_agent']}",
+                f"--referrer={info['referer']}",
+                f"--http-header-fields=Cookie: {cookie_str}",
+                "--demuxer-lavf-format=hls",
+                f"--demuxer-lavf-o=cookies={cookie_str},referer={info['referer']}",
+                f"--force-media-title={ep.title or f'Episode {ep.ep_str}'}",
+                "--msg-level=all=warn,lavf=error,ffmpeg=error",
+                info["url"]
+            ]
+
+            # ── Now Playing Dashboard ─────────────────────────────────────
+            play_panel = Panel(
+                Align.center(
+                    Group(
+                        Text(anime_title, style="bold cyan underline"),
+                        Text.from_markup(f"Now Playing: {ep.label}", style="bold green"),
+                        Text(f"Quality: {cfg.quality}p  ·  Item {idx+1}/{len(episodes)}", style="dim"),
+                        Rule(style="dim", characters="─"),
+                        Text("Close MPV window to return to controls", style="italic cyan")
+                    )
+                ),
+                title="[bold cyan]Live Playback[/bold cyan]",
+                border_style="green",
+                box=box.ROUNDED,
+                padding=(1, 2)
+            )
+
+            with Live(play_panel, console=console, refresh_per_second=4) as live:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, 
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                _, stderr = await proc.communicate()
+                
+                if proc.returncode != 0 and stderr:
+                    err_msg = stderr.decode().strip()
+                    if "failed" in err_msg.lower() or "error" in err_msg.lower():
+                        live.stop()
+                        console.print(f"  [red]✗ MPV Error:[/red] {err_msg[:200]}")
+
+            # ── Playback Menu ─────────────────────────────────────────────
+            console.print()
+            menu_table = Table.grid(padding=(0, 2))
+            options = []
+            if idx < len(episodes) - 1:
+                options.append("[bold green][N][/bold green] Next")
+            if idx > 0:
+                options.append("[bold cyan][P][/bold cyan] Previous")
+            options.append("[bold yellow][R][/bold yellow] Replay")
+            options.append("[bold magenta][S][/bold magenta] Select Ep")
+            options.append("[bold red][Q][/bold red] Quit")
+            
+            menu_table.add_row(*options)
+            console.print(Panel(menu_table, title="[dim]Playback Controls[/dim]", border_style="dim", expand=False))
+            
+            choice = Prompt.ask("  [cyan]Action[/cyan]", choices=["n", "p", "r", "s", "q"], default="n" if idx < len(episodes) - 1 else "q").lower()
+            
+            if choice == "n":
+                idx += 1
+            elif choice == "p":
+                idx -= 1
+            elif choice == "r":
+                continue
+            elif choice == "s":
+                # Enhanced Selection Table
+                sel_table = Table(box=box.SIMPLE, header_style="bold cyan", title="[bold white]Episode List[/bold white]")
+                sel_table.add_column("#", justify="right", style="dim")
+                sel_table.add_column("Ep", justify="right")
+                sel_table.add_column("Title")
+                for i, e in enumerate(episodes):
+                    style = "bold green" if i == idx else ""
+                    sel_table.add_row(str(i+1), e.ep_str, e.title or "—", style=style)
+                
+                console.print(sel_table)
+                num = IntPrompt.ask("  [cyan]Jump to item #[/cyan]", choices=[i+1 for i in range(len(episodes))], default=idx+1)
+                idx = num - 1
+            elif choice == "q":
+                break
+                
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            console.print(f"  [red]✗ Error:[/red] {e}")
+            if not Confirm.ask("  [cyan]Try next episode?[/cyan]", default=True):
+                break
+
+    console.print("\n  [yellow]Playback session ended.[/yellow]")
+    Solver.destroy_session()
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # 14.  BANNER
 # ═════════════════════════════════════════════════════════════════════════
@@ -2013,6 +2261,8 @@ async def _main_async(args: argparse.Namespace):
         hls_workers  = args.workers,
         purge_db     = args.purge_db,
         quality      = args.quality,
+        export_mode  = args.export,
+        stream_mode  = args.stream,
     )
 
     if args.yes or args.all or args.range or args.latest:
@@ -2031,7 +2281,15 @@ async def _main_async(args: argparse.Namespace):
     else:
         cfg = _wizard_config(defaults)
 
-    # ── Download ──────────────────────────────────────────────────────────
+    # ── Export / Download ─────────────────────────────────────────────────
+    if cfg.export_mode:
+        await _run_export(chosen, cfg)
+        return
+
+    if cfg.stream_mode:
+        await _run_stream(anime.title, chosen, cfg)
+        return
+
     db_path = "pahe_batcher.db"
     if cfg.purge_db:
         import tempfile
@@ -2078,9 +2336,16 @@ def main():
     sel.add_argument("--latest", "-n",
         metavar="N", type=int,
         help="Download the latest N episodes")
-    sel.add_argument("--list", "-l",
+    parser.add_argument("--list", "-l",
         action="store_true", dest="list_only",
         help="List episodes only — do not download")
+    parser.add_argument("--export", "-e",
+        action="store_true",
+        help="Export M3U8 links and headers to a file instead of downloading")
+    parser.add_argument("--stream", "-s",
+        action="store_true",
+        help="Stream episodes directly via MPV")
+
 
     # Download settings
     parser.add_argument("-o", "--output",
