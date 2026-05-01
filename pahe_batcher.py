@@ -126,7 +126,7 @@ console = Console()
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────
 
-VERSION           = "1.0.0"
+VERSION           = "1.1.0"
 HLS_WORKERS       = 16          # parallel HLS segment fetches per episode
 DB_TIMEOUT        = 120.0
 RETRY_ATTEMPTS    = 5
