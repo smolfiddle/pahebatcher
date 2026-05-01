@@ -1,19 +1,20 @@
 # pahe-batcher — AnimePahe Batch Downloader
 
-**pahe-batcher** is a high-performance, TUI-driven batch downloader and streamer for [AnimePahe](https://animepahe.ru). It features a parallel HLS segment engine, content-addressed deduplication, and direct integration with MPV for seamless streaming.
+**pahe-batcher** is a professional, high-performance TUI tool for [AnimePahe](https://animepahe.ru). It automates the tedious process of resolving, downloading, and streaming anime into a seamless, parallelized terminal experience.
 
-v1.1.0 introduces **Direct Streaming** and **Link Exporting**, making it more than just a downloader—it's a complete anime consumption toolkit.
+Built with a modern asynchronous pipeline, it features a content-addressed SQLite segment engine that deduplicates shared data (like Openings/Endings) across episodes, saving significant disk space and bandwidth.
 
-![TUI Screenshot](https://i.imgur.com/example_tui.png)
+![Screenshot 1](https://i.imgur.com/1Uc0hPo.png)
+![Screenshot 2](https://i.imgur.com/RjKcvRq.png)
 
 ---
 
 ## 🚀 Quickstart
 
 1.  **Prerequisites:** 
-    - Ensure **[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)** is running (required for Cloudflare bypass).
-    - Install **[ffmpeg](https://ffmpeg.org/)** (for .ts → .mp4 remuxing).
-    - Install **[mpv](https://mpv.io/)** (optional, for streaming).
+    - **[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)**: Must be running to bypass Cloudflare protection.
+    - **[FFmpeg](https://ffmpeg.org/)**: Required for HLS segment remuxing (.ts → .mp4).
+    - **[MPV](https://mpv.io/)**: Optional, required for the `--stream` feature.
 
 2.  **Installation:**
     ```bash
@@ -31,68 +32,89 @@ v1.1.0 introduces **Direct Streaming** and **Link Exporting**, making it more th
 
 ## ✨ Features
 
-### 📺 1. Action Modes
-- **Download Locally:** Internal HLS engine fetches segments in parallel, deduplicates them (saving space on shared OPs/EDs), and remuxes them into high-quality `.mp4` files using FFmpeg.
-- **Export Links:** Resolve all M3U8 links and authentication headers (User-Agent, Referer, Cookies) to a `links_export.txt` file. Perfect for use with IDM, JDownloader, or custom scripts.
-- **Stream via MPV:** Watch anime directly from your terminal. Uses a live TUI dashboard and hardened header injection to bypass security checks in real-time.
+### 📺 Action Modes
+- **Batch Download:** Fetches HLS segments in parallel, stores them in a deduplicated SQLite vault, and remuxes them into organized `.mp4` files.
+- **Export Links:** Resolves M3U8 URLs and extracts authentication headers (User-Agent, Referer, Cookies) to a `links_export.txt` file for use in IDM or JDownloader.
+- **Stream via MPV:** Watch anime directly in your terminal with a live "Now Playing" dashboard and interactive playback controls (Next, Prev, Replay).
 
-### ⚙️ 2. Advanced Engine
-- **Parallel HLS Engine:** Multi-threaded segment fetching (default 16 workers) for maximum speed.
-- **SQLite Vault:** Uses a content-addressed chunk store to deduplicate identical HLS segments across different episodes.
-- **Hardened TLS/SSL:** Uses a strict SSL context with modern ciphers and AEAD support for secure connections.
-- **Adaptive Compression:** Entropy-based compression for stored HLS segments (saving up to 15% disk space during downloads).
+### ⚙️ High-Performance Engine
+- **Parallel HLS Engine:** Uses `aiohttp` and `asyncio` to fetch segments with up to 32 concurrent workers.
+- **SQLite Vault:** A content-addressed chunk store. If multiple episodes share the same segment (like a recap or OP), it's only stored once.
+- **Adaptive Compression:** Entropy-based zlib compression for low-entropy segments (subtitles, silent audio) to save disk space during staging.
+- **Hardened TLS:** Strict SSL/TLS 1.3 context with AEAD cipher selection for secure, modern connections.
 
-### 🖥️ 3. Rich TUI & UX
-- **Interactive Wizard:** A polished Step-by-Step setup for choosing episodes, quality, and concurrency.
-- **Playback Controls:** While streaming, enjoy a navigation menu to skip episodes, replay, or jump to any item in your queue.
-- **Full CLI Support:** Every feature is accessible via flags for automation and power users.
+### 🖥️ User Experience (TUI)
+- **Interactive Wizard:** A beautiful, step-by-step TUI for configuring your batch without memorizing flags.
+- **Live Dashboards:** Real-time progress tracking for downloads and a "Now Playing" console for streaming.
+- **Smart Resume:** Interrupted downloads can be resumed seamlessly—the SQLite engine tracks exactly which segments are missing.
 
 ---
 
-## 🛠 Usage & CLI
+## 🏗️ Architecture Design
 
-### Interactive Mode
-Simply run the script with a series URL to start the interactive wizard:
+PaheBatcher follows a modular **Asynchronous Pipeline Architecture**.
+
+### 1. The Scraper & Solver
+- **AnimePahe API:** Scans series metadata and resolves the full episode list.
+- **FlareSolverr Integration:** Automatically handles Cloudflare challenges and persists valid cookies across the session.
+- **Kwik Resolver:** Unpacks obfuscated JavaScript to extract protected HLS manifests.
+
+### 2. The Storage Layer (The Vault)
+- **Content-Addressing:** Chunks are indexed by their BLAKE2b hash. This enables cross-episode deduplication.
+- **WAL-Mode SQLite:** A high-concurrency database layer handles thousands of segment writes without locking.
+- **Automatic Cleanup:** Temporary database assets are purged after successful remuxing unless `--keep-db` is specified.
+
+### 3. The Delivery Layer
+- **FFmpeg Remuxer:** Stitches segments into a stream-copy MP4 container with fast-start flags for immediate playback.
+- **MPV Bridge:** Injects dynamic headers into the `lavf` demuxer to enable streaming of protected HLS feeds.
+
+---
+
+## 🛠 Usage & CLI Arguments
+
+### CLI Flags
+
 ```bash
-python3 pahe_batcher.py https://animepahe.ru/anime/<uuid>
+python3 pahe_batcher.py <url> [options]
 ```
 
-### Advanced CLI Flags
-| Flag | Description |
-| :--- | :--- |
-| `-a, --all` | Download every episode automatically. |
-| `-r, --range R` | Specify a range, e.g., `1-12`, `5,10`, or `13-`. |
-| `-n, --latest N` | Download the latest N episodes. |
-| `-e, --export` | Export links and headers to `links_export.txt`. |
-| `-s, --stream` | Stream episodes directly via MPV. |
-| `-q, --quality Q` | Preferred quality: `1080`, `720`, `360`. |
-| `-o, --output DIR` | Set the output directory. |
-| `-j, --parallel N` | Max concurrent downloads (default: 2). |
-| `-y, --yes` | Skip all confirmation prompts. |
+| Argument | Description | Default |
+| :--- | :--- | :--- |
+| `URL` | AnimePahe series URL. | **Required** |
+| `-a, --all` | Download every episode automatically. | `False` |
+| `-r, --range` | Specify episode range (e.g., `1-12`, `1,4`, `13-`). | `None` |
+| `-n, --latest` | Download the latest N episodes. | `None` |
+| `-e, --export` | Export links/headers to a file. | `False` |
+| `-s, --stream` | Stream episodes via MPV. | `False` |
+| `-q, --quality` | Preferred quality: `1080`, `720`, `360`. | `1080` |
+| `-o, --output` | Output directory. | `./downloads` |
+| `-j, --parallel` | Concurrent downloads (max 6). | `2` |
+| `-w, --workers` | HLS segment workers per download (max 32). | `16` |
+| `--keep-db` | Do not delete the temp SQLite database. | `False` |
+| `-y, --yes` | Skip all confirmation prompts. | `False` |
 
-**Examples:**
-- **Stream the last 3 episodes:**
-  `python3 pahe_batcher.py <URL> --latest 3 --stream`
-- **Export all links for an external manager:**
-  `python3 pahe_batcher.py <URL> --all --export`
-- **Download Season 1 in 720p:**
-  `python3 pahe_batcher.py <URL> --range 1-12 --quality 720 --yes`
+### Examples
 
----
+**Stream the latest episode in 1080p:**
+```bash
+python3 pahe_batcher.py <URL> --latest 1 --stream
+```
 
-## 📦 Requirements
+**Download a specific range with high concurrency:**
+```bash
+python3 pahe_batcher.py <URL> --range 1-12 --parallel 4 --workers 24
+```
 
-- **Python 3.8+**
-- **FlareSolverr:** Required to handle Cloudflare challenges.
-- **FFmpeg:** Required for merging HLS segments into MP4.
-- **MPV:** Required only for the `--stream` feature.
-- **Dependencies:** `rich`, `aiohttp`, `pycryptodomex` (for encrypted streams).
+**Export links for an external manager:**
+```bash
+python3 pahe_batcher.py <URL> --all --export --output ~/Desktop/Links
+```
 
 ---
 
 ## 🧪 Testing
 
-The project includes a comprehensive test suite covering database operations, HLS parsing, and async navigation logic.
+The project includes a full `pytest` suite covering the database, HLS parser, and async logic.
 ```bash
 pytest test_pahe_batcher.py
 ```
@@ -101,7 +123,7 @@ pytest test_pahe_batcher.py
 
 ## ⚖️ Disclaimer
 
-This tool is for educational purposes only. Please support the creators by watching on official platforms when possible. The authors are not responsible for any misuse of this tool.
+This tool is intended for personal and educational use. Downloading copyrighted content may violate terms of service or local laws. Use responsibly.
 
 ## 📄 License
 
