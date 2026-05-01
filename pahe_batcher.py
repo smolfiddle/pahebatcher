@@ -2242,7 +2242,7 @@ async def _main_async(args: argparse.Namespace):
         border_style="green", box=box.ROUNDED,
     ))
 
-    if not args.yes and not args.all and not args.range and not args.latest:
+    if not args.yes and not args.all and not args.range and not args.latest and not args.export and not args.stream:
         if not Confirm.ask("  [bold cyan]Proceed?[/bold cyan]", default=True):
             console.print("  [yellow]Cancelled.[/yellow]")
             return
@@ -2265,7 +2265,7 @@ async def _main_async(args: argparse.Namespace):
         stream_mode  = args.stream,
     )
 
-    if args.yes or args.all or args.range or args.latest:
+    if args.yes or args.all or args.range or args.latest or args.export or args.stream:
         cfg = defaults
         Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
         console.print(Panel(
