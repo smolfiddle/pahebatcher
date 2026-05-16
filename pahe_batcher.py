@@ -870,7 +870,7 @@ class Dashboard:
 
     def mark_resolving(self, key: str, label: str) -> None:
         if tid := self._tasks.get(key):
-            self._progress.update(tid, description=f"[dim]⟳ Resolving {label[:30]}[/dim]", seg_text="")
+            self._progress.update(tid, description=f"[dim cyan]⟳ {label[:30]}[/dim cyan]", seg_text="resolving")
 
     def mark_downloading(self, key: str, label: str) -> None:
         if tid := self._tasks.get(key):
@@ -991,7 +991,9 @@ class EpisodeDownloader:
 
     async def run(self, ep: EpisodeInfo, info: StreamInfo) -> Optional[Path]:
         key   = ep.session
-        title = ep.title if ep.title and ep.title != "?" else (info.title or f"Episode {ep.ep_str}")
+        def _safe(t: str) -> str:
+            return t if t and t != "?" else ""
+        title = _safe(ep.title) or _safe(info.title) or f"Episode {ep.ep_str}"
         label = f"Ep {ep.ep_str} — {title}"
         store = SegmentStore(self.anime_session, ep.session)
         loop  = asyncio.get_event_loop()
@@ -1130,8 +1132,10 @@ class BatchDownloader:
         async def resolver() -> None:
             for ep in episodes:
                 # Show the episode in the dashboard immediately (resolving state)
-                dash.add_ep(ep.session, f"Ep {ep.ep_str} — {ep.title or '…'}")
-                dash.mark_resolving(ep.session, f"Ep {ep.ep_str}")
+                placeholder = ep.title or "⏳ Resolving title…"
+                label = f"Ep {ep.ep_str} — {placeholder}"
+                dash.add_ep(ep.session, label)
+                dash.mark_resolving(ep.session, label)
                 try:
                     info = await loop.run_in_executor(
                         None, extract_stream, ep.play_url,
