@@ -1,4 +1,6 @@
 import pytest
+import time
+import logging
 from unittest.mock import MagicMock, patch
 import pahe_batcher
 
@@ -24,7 +26,7 @@ def test_parse_ep_range():
         pahe_batcher.EpisodeInfo(3, "s3", "T3", "F", "jpn", "u3"),
         pahe_batcher.EpisodeInfo(4, "s4", "T4", "F", "jpn", "u4"),
     ]
-    
+
     assert pahe_batcher._parse_ep_range("1-2", all_eps) == [1.0, 2.0]
     assert pahe_batcher._parse_ep_range("3-", all_eps) == [3.0, 4.0]
     assert pahe_batcher._parse_ep_range("1,4", all_eps) == [1.0, 4.0]
@@ -42,7 +44,7 @@ def test_adaptive_compressor():
     compressed, was_compressed = pahe_batcher.AdaptiveCompressor.compress(data)
     assert was_compressed is True
     assert len(compressed) < len(data)
-    
+
     decompressed = pahe_batcher.AdaptiveCompressor.decompress(compressed, was_compressed)
     assert decompressed == data
 
@@ -55,10 +57,10 @@ def test_scanner(mock_html, mock_json):
         "data": [{"episode": 1, "session": "abc", "title": "Ep1", "fansub": "Sub", "audio": "jpn"}]
     }
     mock_html.return_value = ("<html><h1>Series Title</h1></html>", [])
-    
+
     scanner = pahe_batcher.AnimePaheScanner("animepahe.ru", "uuid")
     anime = scanner.scan()
-    
+
     assert anime.title == "Series Title"
     assert len(anime.episodes) == 1
     assert anime.episodes[0].number == 1.0
@@ -68,7 +70,7 @@ def test_lru_cache():
     cache.set("k1", "v1")
     cache.set("k2", "v2")
     assert cache.get("k1") == "v1" # k1 is now most recent
-    
+
     cache.set("k3", "v3") # k2 should be evicted (LRU)
     assert cache.get("k1") == "v1"
     assert cache.get("k2") is None
@@ -115,13 +117,12 @@ def test_quality_selection_logic():
         mock_req.return_value = {"response": html, "cookies": []}
         with patch("pahe_batcher._resolve_one_kwik") as mock_resolve:
             mock_resolve.return_value = {"url": "m3u8"}
-            
+
             # Case 1: Pick exact 720p
             pahe_batcher.extract_animepahe_stream("url", preferred_quality=720)
             # The logic picks best quality <= preference.
-            
-            # Case 2: Pick 720p when 1080p is preferred but missing (not applicable here, but logic check)
-            # Case 3: Pick lowest if all are higher
+
+            # Case 2: Pick lowest if all are higher
             pahe_batcher.extract_animepahe_stream("url", preferred_quality=240)
             # It should pick 360p (the lowest available)
 
@@ -129,42 +130,41 @@ def test_asset_manager_database_ops(tmp_path):
     db_file = str(tmp_path / "test.db")
     db = pahe_batcher.VaultDB(db_file)
     mgr = pahe_batcher.AssetManager(db)
-    
+
     # 1. Add Asset
     aid = mgr.add_asset("http://source", "Title", "1")
     assert aid == 1
-    
+
     # 2. Store Chunk (Deduplication Check)
     data = b"chunk_data"
     mgr.store_single_chunk(aid, 0, data)
-    
+
     # Verify it exists
     completed = mgr.get_completed_segments(aid)
     assert 0 in completed
-    
+
     # Store same data for another asset
     aid2 = mgr.add_asset("http://source2", "Title2", "2")
     mgr.store_single_chunk(aid2, 0, data)
-    
+
     # Verify chunks table has only 1 entry (deduplication)
     conn = db.pool.get()
     count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
     assert count == 1
     db.pool.put(conn)
-    
+
     # 3. Update status
     mgr.update_status(aid, "complete", total_bytes=10)
     asset = mgr.get_asset(aid)
     assert asset["status"] == "complete"
     assert asset["total_bytes"] == 10
-    
+
     # 4. Meta
     mgr.store_meta(aid, "key", "value")
     assert mgr.get_meta(aid, "key") == "value"
-    
+
     db.close()
 
-import time
 def test_lru_cache_expiry():
     cache = pahe_batcher.LRUCache(max_size=10, ttl=0.1)
     cache.set("expired", "value")
@@ -185,7 +185,7 @@ async def test_run_stream_navigation(mock_confirm, mock_ask, mock_exec, mock_ext
         "cookies": [],
         "title": "Real Title"
     }
-    
+
     # Mock subprocess
     mock_proc = MagicMock()
     # Use AsyncMock for methods that are awaited
@@ -193,22 +193,80 @@ async def test_run_stream_navigation(mock_confirm, mock_ask, mock_exec, mock_ext
     async def side_effect_communicate():
         return (b"", b"")
     mock_proc.communicate.side_effect = side_effect_communicate
-    
+
     mock_proc.returncode = 0
     mock_exec.return_value = mock_proc
-    
+
     # Mock user input: [Next, Quit]
     mock_ask.side_effect = ["n", "q"]
     mock_confirm.return_value = True
-    
+
     episodes = [
         pahe_batcher.EpisodeInfo(1, "s1", "—", "F", "jpn", "u1"),
         pahe_batcher.EpisodeInfo(2, "s2", "—", "F", "jpn", "u2"),
     ]
     cfg = pahe_batcher.DownloadConfig()
-    
+
     await pahe_batcher._run_stream("Series", episodes, cfg)
-    
+
     # Verify titles were updated
     assert episodes[0].title == "Real Title"
     assert mock_exec.call_count == 2
+
+# ── AUDIO SELECTION TESTS ────────────────────────────────────────────────
+
+def test_audio_selection_logic():
+    # Mock HTML with both subbed and dubbed links at the same resolution
+    # Note: _has_dub_attribute looks for data-audio="eng"
+    html = """
+    <div id="resolutionMenu">
+        <button data-src="https://kwik.si/e/sub1080" data-resolution="1080" data-fansub="SubsPlease">1080p · SubsPlease</button>
+        <button data-src="https://kwik.si/e/dub1080" data-resolution="1080" data-audio="eng" data-fansub="Yameii">1080p · Yameii</button>
+        <button data-src="https://kwik.si/e/sub720" data-resolution="720" data-fansub="SubsPlease">720p · SubsPlease</button>
+    </div>
+    """
+    
+    with patch("pahe_batcher.Solver.request") as mock_req:
+        mock_req.return_value = {"response": html, "cookies": []}
+        
+        # We also need to mock _resolve_one_kwik to return something identifiable
+        def side_effect_resolve(url):
+            return {"url": url, "title": "Mock Episode"}
+            
+        with patch("pahe_batcher._resolve_one_kwik", side_effect=side_effect_resolve):
+            
+            # Case 1: Prefer JPN (Subbed)
+            info_jpn = pahe_batcher.extract_animepahe_stream("url", preferred_quality=1080, prefer_audio="jpn")
+            assert "sub1080" in info_jpn["url"], f"Expected subbed 1080p, got {info_jpn['url']}"
+            
+            # Case 2: Prefer ENG (Dubbed)
+            info_eng = pahe_batcher.extract_animepahe_stream("url", preferred_quality=1080, prefer_audio="eng")
+            assert "dub1080" in info_eng["url"], f"Expected dubbed 1080p, got {info_eng['url']}"
+
+def test_audio_selection_fallback():
+    # Mock HTML with ONLY subbed links
+    html = """
+    <div id="resolutionMenu">
+        <button data-src="https://kwik.si/e/sub1080" data-resolution="1080">1080p</button>
+    </div>
+    """
+    with patch("pahe_batcher.Solver.request") as mock_req:
+        mock_req.return_value = {"response": html, "cookies": []}
+        with patch("pahe_batcher._resolve_one_kwik") as mock_resolve:
+            mock_resolve.return_value = {"url": "sub1080_url"}
+            
+            # Prefer ENG but only JPN exists -> should fallback to JPN
+            info = pahe_batcher.extract_animepahe_stream("url", preferred_quality=1080, prefer_audio="eng")
+            assert info["url"] == "sub1080_url"
+
+def test_parse_resolution_buttons_new_structure():
+    html = """
+    <div id="resolutionMenu">
+        <button data-src="https://kwik.si/url1" data-resolution="1080">1080p</button>
+        <button data-src="https://kwik.si/url2" data-resolution="1080" data-audio="eng">1080p Dub</button>
+    </div>
+    """
+    entries = pahe_batcher._parse_resolution_buttons(html)
+    assert len(entries) == 2
+    assert entries[0] == (1080, "https://kwik.si/url1", False, "1080p")
+    assert entries[1] == (1080, "https://kwik.si/url2", True, "1080p Dub")
