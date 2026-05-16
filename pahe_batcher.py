@@ -3,44 +3,6 @@
 pahe-batcher v2.0.0 — AnimePahe Batch Downloader
 =================================================
 Blazing-fast HLS engine · Shared aiohttp pool · Prefetch pipeline · Rich TUI
-
-Usage (interactive wizard):
-    python pahe_batcher.py https://animepahe.ru/anime/<uuid>
-
-Usage (non-interactive / scripted):
-    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --all
-    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --range 1-12
-    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --latest 5
-    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --list
-    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --export
-    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --stream
-
-Requirements
-------------
-  pip install rich aiohttp
-  ffmpeg in PATH               (HLS → MP4 remux; falls back to .ts)
-  FlareSolverr running         (FLARESOLVERR_URL env var, default http://localhost:8191/v1)
-
-Optional
---------
-  pip install pycryptodomex    (AES-128 encrypted HLS streams)
-
-What's new in v2.0.0
---------------------
-  Speed:
-    • SegmentStore replaces SQLite chunk engine — no per-segment hashing,
-      no entropy compression, no DB transaction overhead. Direct file I/O.
-    • Shared aiohttp session across all concurrent downloads (connection
-      reuse, DNS cache, keep-alive).
-    • Prefetch pipeline: FlareSolverr resolves episode N+1 while N downloads.
-    • Tuned TCP connector: keepalive, DNS TTL, per-host limit.
-    • ffmpeg concat demuxer (faster than piping raw TS).
-  UX:
-    • Pre-download summary panel with episode list & size estimate.
-    • FlareSolverr health check at startup (clear error if not running).
-    • Cleaner 3-step wizard; re-uses settings between actions.
-    • Richer completion table with per-episode file size.
-    • Better error messages with actionable hints.
 """
 
 from __future__ import annotations
@@ -846,7 +808,7 @@ class Dashboard:
         header.add_column(width=11, justify="center") # speed
         header.add_column(width=10, justify="center") # eta
         header.add_column(width=10, justify="right")  # size
-        
+
         header.add_row(
             "", "[bold white]Episode Title[/bold white]", "[bold white]Progress[/bold white]",
             "[bold white]Segments[/bold white]", "[bold white]%[/bold white]",
