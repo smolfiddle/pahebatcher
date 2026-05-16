@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-pahe-batcher — AnimePahe Batch Downloader
-==========================================
-Parallel HLS segment engine · aiohttp-powered · Rich TUI
+pahe-batcher v2.0.0 — AnimePahe Batch Downloader
+=================================================
+Blazing-fast HLS engine · Shared aiohttp pool · Prefetch pipeline · Rich TUI
 
 Usage (interactive wizard):
     python pahe_batcher.py https://animepahe.ru/anime/<uuid>
@@ -11,6 +11,9 @@ Usage (non-interactive / scripted):
     python pahe_batcher.py https://animepahe.ru/anime/<uuid> --all
     python pahe_batcher.py https://animepahe.ru/anime/<uuid> --range 1-12
     python pahe_batcher.py https://animepahe.ru/anime/<uuid> --latest 5
+    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --list
+    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --export
+    python pahe_batcher.py https://animepahe.ru/anime/<uuid> --stream
 
 Requirements
 ------------
@@ -21,6 +24,23 @@ Requirements
 Optional
 --------
   pip install pycryptodomex    (AES-128 encrypted HLS streams)
+
+What's new in v2.0.0
+--------------------
+  Speed:
+    • SegmentStore replaces SQLite chunk engine — no per-segment hashing,
+      no entropy compression, no DB transaction overhead. Direct file I/O.
+    • Shared aiohttp session across all concurrent downloads (connection
+      reuse, DNS cache, keep-alive).
+    • Prefetch pipeline: FlareSolverr resolves episode N+1 while N downloads.
+    • Tuned TCP connector: keepalive, DNS TTL, per-host limit.
+    • ffmpeg concat demuxer (faster than piping raw TS).
+  UX:
+    • Pre-download summary panel with episode list & size estimate.
+    • FlareSolverr health check at startup (clear error if not running).
+    • Cleaner 3-step wizard; re-uses settings between actions.
+    • Richer completion table with per-episode file size.
+    • Better error messages with actionable hints.
 """
 
 from __future__ import annotations
@@ -30,15 +50,11 @@ import argparse
 import asyncio
 import atexit
 import contextlib
-import hashlib
 import json
 import logging
-import math
 import os
-import queue
 import re
 import shutil
-import sqlite3
 import ssl
 import subprocess
 import sys
@@ -48,39 +64,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zlib
-from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
-
-# ── SECURITY: HARDENED TLS ───────────────────────────────────────────────
-
-def get_hardened_ssl_context() -> ssl.SSLContext:
-    """
-    Creates a strict SSL/TLS context:
-    - TLS 1.2 or 1.3 only
-    - Secure AEAD ciphers only (CRIME-resistant: no compression)
-    - Strict certificate validation
-    """
-    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    ctx.options |= ssl.OP_NO_COMPRESSION
-    ctx.set_ciphers(
-        "ECDHE-ECDSA-AES128-GCM-SHA256:"
-        "ECDHE-RSA-AES128-GCM-SHA256:"
-        "ECDHE-ECDSA-AES256-GCM-SHA384:"
-        "ECDHE-RSA-AES256-GCM-SHA384:"
-        "ECDHE-ECDSA-CHACHA20-POLY1305:"
-        "ECDHE-RSA-CHACHA20-POLY1305:"
-        "DHE-RSA-AES128-GCM-SHA256:"
-        "DHE-RSA-AES256-GCM-SHA384"
-    )
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    ctx.check_hostname = True
-    return ctx
-
+from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 
 # ── AES (optional) ────────────────────────────────────────────────────────
 try:
@@ -97,6 +83,7 @@ except ImportError:
 try:
     from rich import box
     from rich.align import Align
+    from rich.columns import Columns
     from rich.console import Console, Group
     from rich.live import Live
     from rich.panel import Panel
@@ -132,20 +119,16 @@ console = Console()
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────
 
-VERSION             = "1.3.0"
-HLS_WORKERS         = 16        # parallel HLS segment fetches per episode
-DB_TIMEOUT          = 120.0
-RETRY_ATTEMPTS      = 5
-RETRY_BASE_DELAY    = 0.75
-FLARESOLVERR_URL    = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+VERSION          = "2.0.0"
+HLS_WORKERS      = 24          # parallel segment fetches per episode
+RETRY_ATTEMPTS   = 5
+RETRY_BASE_DELAY = 0.5
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+REQUEST_DELAY    = 0.4         # between API page fetches
+CACHE_DIR        = Path(tempfile.gettempdir()) / "pahe_batcher_v2"
 
-EPISODES_PER_PAGE   = 30
-REQUEST_DELAY       = 0.4
-DB_POOL_SIZE        = 8
-
-# Rough estimate for total-bytes display before real sizes arrive.
-# One TS packet = 188 bytes; a typical segment ≈ 256 packets.
-_TS_SEGMENT_HINT_BYTES = 188 * 256
+# Rough bytes-per-segment hint before real sizes land (188 bytes × 512 packets)
+_SEG_HINT_BYTES = 188 * 512
 
 log = logging.getLogger("pahe_batcher")
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -163,7 +146,10 @@ class EpisodeInfo:
     fansub:      str
     audio:       str
     play_url:    str
-    resolutions: Dict[int, str] = field(default_factory=dict)  # quality → Kwik URL
+
+    @property
+    def ep_str(self) -> str:
+        return str(int(self.number)) if self.number == int(self.number) else str(self.number)
 
     @property
     def label(self) -> str:
@@ -171,681 +157,404 @@ class EpisodeInfo:
         dub = "  [yellow]DUB[/yellow]" if self.audio and self.audio != "jpn" else ""
         return f"Ep [cyan]{num:>4}[/cyan]  {self.title or '—'}{dub}"
 
-    @property
-    def ep_str(self) -> str:
-        return str(int(self.number)) if self.number == int(self.number) else str(self.number)
-
 
 @dataclass
 class AnimeInfo:
     session:  str
     title:    str
     host:     str
-    total:    int               = 0
+    total:    int = 0
     episodes: List[EpisodeInfo] = field(default_factory=list)
 
 
 @dataclass
+class StreamInfo:
+    """Resolved stream information from Kwik."""
+    url:        str
+    cookies:    List[dict]
+    user_agent: str
+    referer:    str
+    title:      str = ""
+    audio:      str = "jpn"
+    fansub:     str = ""
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        return {"User-Agent": self.user_agent, "Referer": self.referer}
+
+    @property
+    def cookie_str(self) -> str:
+        return "; ".join(f"{c['name']}={c['value']}" for c in self.cookies)
+
+
+@dataclass
 class DownloadConfig:
-    output_dir:     str  = "./downloads"
-    max_parallel:   int  = 2
-    hls_workers:    int  = HLS_WORKERS
-    purge_db:       bool = True
-    quality:        int  = 1080
-    export_mode:    bool = False
-    stream_mode:    bool = False
-    audio_lang:     str  = "jpn"   # "jpn" = subbed, "eng" = dubbed
-    fallback_audio: bool = True    # if preferred lang unavailable, use the other
+    output_dir:   str  = "./downloads"
+    max_parallel: int  = 2
+    hls_workers:  int  = HLS_WORKERS
+    quality:      int  = 1080
+    export_mode:  bool = False
+    stream_mode:  bool = False
+    audio_lang:   str  = "jpn"
+    keep_temp:    bool = False   # keep raw segment files (useful for debugging)
 
 
 # ═════════════════════════════════════════════════════════════════════════
 # 2.  SHARED UTILITIES
 # ═════════════════════════════════════════════════════════════════════════
 
-def format_cookies(cookies: List[dict]) -> str:
-    """Format a list of cookie dicts into a Cookie header string."""
-    return "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-
-
-def _sanitize_filename(name: str) -> str:
-    """Strip characters unsafe for filenames and collapse repeated underscores."""
+def sanitize(name: str) -> str:
+    """Strip unsafe filename characters and collapse underscores."""
     safe = re.sub(r"[^\w\s\-.]", "", name).strip().replace(" ", "_")
     return re.sub(r"_+", "_", safe)
 
 
-def _make_ep_prefix(ep_num: str) -> str:
-    """
-    Convert an episode number string to a zero-padded sortable prefix.
-    '5'   → '005'
-    '5.5' → '005.5'
-    """
+def ep_prefix(ep_num: str) -> str:
+    """Zero-pad an episode number for sortable filenames: '5' → '005', '5.5' → '005.5'."""
     try:
         return f"{float(ep_num):05.1f}" if "." in ep_num else f"{int(ep_num):03d}"
     except (ValueError, TypeError):
         return ep_num
 
 
-def _audio_display(audio: str) -> str:
-    """Return a rich-styled badge for the audio language."""
-    if audio == "eng":
-        return "[yellow]DUB[/yellow]"
-    elif audio == "jpn":
-        return "[dim]JPN[/dim]"
-    return f"[cyan]{audio.upper()}[/cyan]"
+def audio_badge(audio: str) -> str:
+    return {"eng": "[yellow]DUB[/yellow]", "jpn": "[dim]JPN[/dim]"}.get(audio, f"[cyan]{audio.upper()}[/cyan]")
+
+
+def fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n //= 1024
+    return f"{n:.1f} TB"
+
+
+def compact_ep_range(episodes: List[EpisodeInfo]) -> str:
+    """Summarise episode list as '1–12, 14, 16–24'."""
+    if not episodes:
+        return "none"
+    nums = sorted(ep.number for ep in episodes)
+    if len(nums) == 1:
+        n = nums[0]; return str(int(n) if n == int(n) else n)
+    ranges: List[Tuple[float, float]] = []
+    s = p = nums[0]
+    for n in nums[1:]:
+        if n == p + 1: p = n
+        else: ranges.append((s, p)); s = p = n
+    ranges.append((s, p))
+    parts = []
+    for a, b in ranges:
+        ai = int(a) if a == int(a) else a
+        bi = int(b) if b == int(b) else b
+        parts.append(str(ai) if a == b else f"{ai}–{bi}")
+    return ", ".join(parts)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 3.  LRU CACHE
+# 3.  HARDENED TLS
 # ═════════════════════════════════════════════════════════════════════════
 
-class LRUCache:
-    """Thread-safe LRU cache with per-entry TTL expiry."""
+def make_ssl_ctx() -> ssl.SSLContext:
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.options |= ssl.OP_NO_COMPRESSION
+    ctx.set_ciphers(
+        "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
+        "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+        "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+        "DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384"
+    )
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = True
+    return ctx
 
-    def __init__(self, max_size: int = 512, ttl: float = 60.0) -> None:
-        self.max_size = max_size
-        self.ttl      = ttl
-        self._cache: OrderedDict = OrderedDict()
-        self._lock  = threading.Lock()
+
+# ═════════════════════════════════════════════════════════════════════════
+# 4.  SEGMENT STORE  — direct temp-dir, no SQLite overhead
+# ═════════════════════════════════════════════════════════════════════════
+
+class SegmentStore:
+    """
+    Stores HLS segments as individual numbered files in a temp directory.
+
+    v2.0 design rationale vs. the old SQLite chunk store
+    ─────────────────────────────────────────────────────
+    Old path per segment: blake2b hash → entropy sample → maybe zlib → BEGIN TX
+                          → INSERT chunks → INSERT asset_chunks → COMMIT
+    New path per segment: open(path, "wb").write(data)   ← one syscall
+
+    TS segments are already compressed media; the entropy check always
+    returned "high entropy" and skipped compression anyway.  The blake2b
+    hash and DB round-trip were pure overhead.
+
+    Resume works by checking which numbered .ts files already exist.
+    """
+
+    def __init__(self, anime_session: str, ep_session: str) -> None:
+        self.dir = CACHE_DIR / anime_session / ep_session
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Segment I/O ───────────────────────────────────────────────────────
+
+    def seg_path(self, idx: int) -> Path:
+        return self.dir / f"{idx:06d}.ts"
+
+    def has_seg(self, idx: int) -> bool:
+        return self.seg_path(idx).exists()
+
+    def done_indices(self) -> Set[int]:
+        return {int(p.stem) for p in self.dir.glob("??????.ts")}
+
+    def write_seg(self, idx: int, data: bytes) -> None:
+        """Atomic write via rename to avoid partial files on crash."""
+        tmp = self.seg_path(idx).with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.rename(self.seg_path(idx))
+
+    # ── Assembly ──────────────────────────────────────────────────────────
+
+    def assemble(self, n_segments: int, out: Path) -> bool:
+        """
+        Concatenate segments → mux to MP4 via ffmpeg concat demuxer.
+        Falls back to raw .ts if ffmpeg is unavailable or fails.
+        Returns True on success.
+        """
+        # Validate completeness
+        missing = [i for i in range(n_segments) if not self.seg_path(i).exists()]
+        if missing:
+            log.error("Missing segments %s … (total %d)", missing[:5], len(missing))
+            return False
+
+        # Build ffmpeg concat list
+        lst = self.dir / "concat.txt"
+        with open(lst, "w", encoding="utf-8") as f:
+            for i in range(n_segments):
+                # ffmpeg requires forward slashes even on Windows
+                f.write(f"file '{self.seg_path(i).as_posix()}'\n")
+
+        # Try ffmpeg concat demuxer (single-pass, fastest)
+        if shutil.which("ffmpeg"):
+            try:
+                res = subprocess.run(
+                    ["ffmpeg", "-y",
+                     "-f", "concat", "-safe", "0", "-i", str(lst),
+                     "-c", "copy", "-movflags", "+faststart", str(out)],
+                    capture_output=True, timeout=600,
+                )
+                if res.returncode == 0:
+                    return True
+                # Attempt pipe fallback
+                stderr = res.stderr.decode(errors="replace").strip()
+                log.warning("ffmpeg concat failed (%s) — trying TS pipe", stderr[-120:])
+
+                # Pipe: cat all segments → stdin → ffmpeg → MP4
+                proc = subprocess.Popen(
+                    ["ffmpeg", "-y", "-i", "pipe:0", "-c", "copy",
+                     "-movflags", "+faststart", str(out)],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                for i in range(n_segments):
+                    proc.stdin.write(self.seg_path(i).read_bytes())  # type: ignore[union-attr]
+                proc.stdin.close()  # type: ignore[union-attr]
+                proc.wait(timeout=600)
+                if proc.returncode == 0:
+                    return True
+
+            except FileNotFoundError:
+                console.print("  [yellow]⚠ ffmpeg not found — saving as .ts[/yellow]")
+            except subprocess.TimeoutExpired:
+                console.print("  [yellow]⚠ ffmpeg timed out — saving as .ts[/yellow]")
+            except Exception as exc:
+                console.print(f"  [yellow]⚠ ffmpeg error ({exc}) — saving as .ts[/yellow]")
+        else:
+            console.print("  [yellow]⚠ ffmpeg not in PATH — saving as .ts[/yellow]")
+
+        # Final fallback: raw .ts concatenation
+        out_ts = out.with_suffix(".ts")
+        with open(out_ts, "wb") as fh:
+            for i in range(n_segments):
+                fh.write(self.seg_path(i).read_bytes())
+        return True
+
+    def cleanup(self) -> None:
+        with contextlib.suppress(Exception):
+            shutil.rmtree(self.dir)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 5.  TTL CACHE  (simplified, replaces OrderedDict LRU)
+# ═════════════════════════════════════════════════════════════════════════
+
+class TTLCache:
+    def __init__(self, ttl: float = 120.0, max_size: int = 512) -> None:
+        self._d: Dict[str, Tuple[float, Any]] = {}
+        self._lock = threading.Lock()
+        self._ttl  = ttl
+        self._max  = max_size
 
     def get(self, key: str) -> Any:
         with self._lock:
-            if key in self._cache:
-                ts, value = self._cache[key]
-                if time.monotonic() - ts < self.ttl:
-                    self._cache.move_to_end(key)
-                    return value
-                del self._cache[key]
+            if e := self._d.get(key):
+                if time.monotonic() - e[0] < self._ttl:
+                    return e[1]
+                del self._d[key]
         return None
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, val: Any) -> None:
         with self._lock:
-            if key in self._cache:
-                del self._cache[key]
-            elif len(self._cache) >= self.max_size:
-                self._cache.popitem(last=False)
-            self._cache[key] = (time.monotonic(), value)
+            if len(self._d) >= self._max:
+                del self._d[min(self._d, key=lambda k: self._d[k][0])]
+            self._d[key] = (time.monotonic(), val)
 
     def clear(self) -> None:
         with self._lock:
-            self._cache.clear()
+            self._d.clear()
+
+
+_solver_cache  = TTLCache(ttl=120.0, max_size=256)
+_aes_key_cache = TTLCache(ttl=3600.0, max_size=128)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 4.  ADAPTIVE COMPRESSOR
+# 6.  FLARESOLVERR CLIENT
 # ═════════════════════════════════════════════════════════════════════════
-
-class AdaptiveCompressor:
-    """
-    Entropy-adaptive compression for stored HLS segments.
-
-    High-entropy data (already encrypted/compressed TS) is stored raw.
-    Low-entropy data (black frames, silent audio, subtitle segments) is
-    compressed with zlib before being written to SQLite, saving disk space.
-    """
-
-    ENTROPY_HIGH = 7.5
-    MIN_RATIO    = 1.08
-    SAMPLE_SIZE  = 2048
-
-    @classmethod
-    def _entropy(cls, data: bytes) -> float:
-        n = len(data)
-        if n == 0:
-            return 0.0
-        if n <= cls.SAMPLE_SIZE:
-            sample = data
-        else:
-            third  = cls.SAMPLE_SIZE // 3
-            mid    = n // 2
-            sample = data[:third] + data[mid:mid + third] + data[-third:]
-        sample_len = len(sample)
-        entropy    = 0.0
-        for count in Counter(sample).values():
-            p = count / sample_len
-            entropy -= p * math.log2(p)
-        return entropy
-
-    @classmethod
-    def compress(cls, data: bytes) -> Tuple[bytes, bool]:
-        if cls._entropy(data) >= cls.ENTROPY_HIGH:
-            return data, False
-        compressed = zlib.compress(data, level=1)
-        if len(data) / len(compressed) >= cls.MIN_RATIO:
-            return compressed, True
-        return data, False
-
-    @classmethod
-    def decompress(cls, data: bytes, was_compressed: bool) -> bytes:
-        return zlib.decompress(data) if was_compressed else data
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# 5.  SQLite CONNECTION POOL
-# ═════════════════════════════════════════════════════════════════════════
-
-class ConnectionPool:
-    """Bounded pool of WAL-mode SQLite connections."""
-
-    def __init__(self, db_path: str, pool_size: int = DB_POOL_SIZE) -> None:
-        self.db_path  = db_path
-        self._pool: queue.Queue[sqlite3.Connection] = queue.Queue(maxsize=pool_size)
-        for _ in range(pool_size):
-            self._pool.put(self._make())
-
-    def _make(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=DB_TIMEOUT, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous  = NORMAL")
-        conn.execute("PRAGMA cache_size   = -32768")
-        conn.execute("PRAGMA temp_store   = MEMORY")
-        conn.execute("PRAGMA mmap_size    = 268435456")
-        return conn
-
-    def get(self) -> sqlite3.Connection:
-        try:
-            conn = self._pool.get_nowait()
-            conn.execute("SELECT 1")   # liveness probe
-            return conn
-        except queue.Empty:
-            log.debug("Connection pool exhausted — creating overflow connection.")
-            return self._make()
-        except sqlite3.Error:
-            log.debug("Pool connection unhealthy — replacing.")
-            return self._make()
-
-    def put(self, conn: sqlite3.Connection) -> None:
-        try:
-            self._pool.put_nowait(conn)
-        except queue.Full:
-            with contextlib.suppress(Exception):
-                conn.close()
-
-    def close_all(self) -> None:
-        while not self._pool.empty():
-            with contextlib.suppress(Exception):
-                self._pool.get_nowait().close()
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# 6.  DATABASE LAYER  (hash-addressed chunks with deduplication)
-# ═════════════════════════════════════════════════════════════════════════
-
-def _blake2b(data: bytes) -> str:
-    return hashlib.blake2b(data, digest_size=32).hexdigest()
-
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS assets (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_url  TEXT    NOT NULL,
-    title       TEXT,
-    status      TEXT    NOT NULL DEFAULT 'pending',
-    total_bytes INTEGER,
-    ep_number   TEXT,
-    audio       TEXT,
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
-);
-
--- Content-addressed chunk store.  Identical HLS segments (shared OP/ED/eyecatch)
--- are stored ONCE regardless of how many episodes reference them.
-CREATE TABLE IF NOT EXISTS chunks (
-    hash        TEXT    PRIMARY KEY,
-    data        BLOB    NOT NULL,
-    compressed  INTEGER NOT NULL DEFAULT 0,
-    orig_len    INTEGER NOT NULL
-) WITHOUT ROWID;
-
--- Ordered per-asset chunk references.
-CREATE TABLE IF NOT EXISTS asset_chunks (
-    asset_id    INTEGER NOT NULL,
-    seq_idx     INTEGER NOT NULL,
-    chunk_hash  TEXT    NOT NULL REFERENCES chunks(hash),
-    PRIMARY KEY (asset_id, seq_idx)
-) WITHOUT ROWID;
-
-CREATE INDEX IF NOT EXISTS idx_asset_chunks_hash ON asset_chunks(chunk_hash);
-
-CREATE TABLE IF NOT EXISTS meta (
-    asset_id    INTEGER NOT NULL,
-    key         TEXT    NOT NULL,
-    value       BLOB    NOT NULL,
-    PRIMARY KEY (asset_id, key)
-) WITHOUT ROWID;
-"""
-
-
-class VaultDB:
-    def __init__(self, db_path: str) -> None:
-        self.db_path = db_path
-        self.pool    = ConnectionPool(db_path)
-        self._init_schema()
-
-    def _init_schema(self) -> None:
-        conn = self.pool.get()
-        try:
-            conn.execute("PRAGMA auto_vacuum = FULL")
-            conn.executescript(_SCHEMA)
-            # Schema migration: add missing columns if absent (older DBs).
-            cols = {r["name"] for r in conn.execute("PRAGMA table_info(assets)").fetchall()}
-            if "ep_number" not in cols:
-                conn.execute("ALTER TABLE assets ADD COLUMN ep_number TEXT")
-            if "audio" not in cols:
-                conn.execute("ALTER TABLE assets ADD COLUMN audio TEXT")
-            conn.commit()
-        except Exception as exc:
-            conn.rollback()
-            log.error("Database init failed: %s", exc)
-            raise
-        finally:
-            self.pool.put(conn)
-
-    def close(self) -> None:
-        conn = self.pool.get()
-        try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        finally:
-            conn.close()
-        self.pool.close_all()
-
-
-class AssetManager:
-    def __init__(self, db: VaultDB) -> None:
-        self.db = db
-
-    # ── Chunk I/O ─────────────────────────────────────────────────────────
-
-    def store_single_chunk(self, asset_id: int, seq_idx: int, raw_data: bytes) -> int:
-        """
-        Store one chunk and immediately link it to the asset.
-        Constant memory usage regardless of episode length.
-        Returns the uncompressed byte count.
-        """
-        h             = _blake2b(raw_data)
-        stored, compr = AdaptiveCompressor.compress(raw_data)
-        conn          = self.db.pool.get()
-        try:
-            conn.execute("BEGIN")
-            conn.execute(
-                "INSERT OR IGNORE INTO chunks (hash, data, compressed, orig_len) VALUES (?,?,?,?)",
-                (h, stored, int(compr), len(raw_data)),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO asset_chunks (asset_id, seq_idx, chunk_hash) VALUES (?,?,?)",
-                (asset_id, seq_idx, h),
-            )
-            conn.commit()
-            return len(raw_data)
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            self.db.pool.put(conn)
-
-    def get_total_bytes(self, asset_id: int) -> int:
-        """Sum of original (uncompressed) byte lengths for all chunks in this asset."""
-        conn = self.db.pool.get()
-        try:
-            row = conn.execute(
-                "SELECT SUM(c.orig_len) "
-                "FROM chunks c JOIN asset_chunks ac ON c.hash = ac.chunk_hash "
-                "WHERE ac.asset_id = ?",
-                (asset_id,),
-            ).fetchone()
-            return row[0] or 0
-        finally:
-            self.db.pool.put(conn)
-
-    def iter_chunks(self, asset_id: int) -> Iterator[bytes]:
-        conn = self.db.pool.get()
-        try:
-            rows = conn.execute(
-                "SELECT c.data, c.compressed "
-                "FROM asset_chunks ac JOIN chunks c ON ac.chunk_hash = c.hash "
-                "WHERE ac.asset_id = ? ORDER BY ac.seq_idx",
-                (asset_id,),
-            ).fetchall()
-        finally:
-            self.db.pool.put(conn)
-
-        for data, compressed in rows:
-            yield AdaptiveCompressor.decompress(data, bool(compressed))
-
-    def get_completed_segments(self, asset_id: int) -> Set[int]:
-        """Sequence indices already persisted for this asset (used for resuming)."""
-        conn = self.db.pool.get()
-        try:
-            cur = conn.execute(
-                "SELECT seq_idx FROM asset_chunks WHERE asset_id = ?", (asset_id,)
-            )
-            return {r[0] for r in cur.fetchall()}
-        finally:
-            self.db.pool.put(conn)
-
-    def delete_asset_chunks(self, asset_id: int) -> None:
-        """
-        Remove an asset's chunks and metadata, preserving chunks referenced
-        by other assets (dedup-safe).
-        """
-        conn = self.db.pool.get()
-        try:
-            conn.execute("BEGIN")
-            conn.execute("DELETE FROM asset_chunks WHERE asset_id=?", (asset_id,))
-            conn.execute("DELETE FROM meta WHERE asset_id=?", (asset_id,))
-            conn.execute(
-                "DELETE FROM chunks "
-                "WHERE hash NOT IN (SELECT DISTINCT chunk_hash FROM asset_chunks)"
-            )
-            conn.commit()
-        except Exception as exc:
-            conn.rollback()
-            log.debug("Cleanup for asset %d failed: %s", asset_id, exc)
-        finally:
-            self.db.pool.put(conn)
-
-    # ── Asset CRUD ────────────────────────────────────────────────────────
-
-    def add_asset(self, url: str, title: str = "", ep_number: str = "") -> int:
-        now  = int(time.time())
-        conn = self.db.pool.get()
-        try:
-            cur = conn.execute(
-                "INSERT INTO assets "
-                "(source_url, title, ep_number, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'pending', ?, ?)",
-                (url, title or None, ep_number or None, now, now),
-            )
-            conn.commit()
-            return cur.lastrowid
-        finally:
-            self.db.pool.put(conn)
-
-    def get_asset(self, asset_id: int) -> Optional[sqlite3.Row]:
-        conn = self.db.pool.get()
-        try:
-            return conn.execute(
-                "SELECT * FROM assets WHERE id=?", (asset_id,)
-            ).fetchone()
-        finally:
-            self.db.pool.put(conn)
-
-    def update_status(self, asset_id: int, status: str, **kwargs: Any) -> None:
-        sets   = [f"{k}=?" for k in kwargs] + ["status=?", "updated_at=?"]
-        values = list(kwargs.values()) + [status, int(time.time()), asset_id]
-        conn   = self.db.pool.get()
-        try:
-            conn.execute(f"UPDATE assets SET {', '.join(sets)} WHERE id=?", values)
-            conn.commit()
-        finally:
-            self.db.pool.put(conn)
-
-    # ── Metadata ──────────────────────────────────────────────────────────
-
-    def store_meta(self, asset_id: int, key: str, value: str) -> None:
-        conn = self.db.pool.get()
-        try:
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (asset_id, key, value) VALUES (?,?,?)",
-                (asset_id, key, value.encode() if isinstance(value, str) else value),
-            )
-            conn.commit()
-        finally:
-            self.db.pool.put(conn)
-
-    def get_meta(self, asset_id: int, key: str) -> Optional[str]:
-        conn = self.db.pool.get()
-        try:
-            row = conn.execute(
-                "SELECT value FROM meta WHERE asset_id=? AND key=?",
-                (asset_id, key),
-            ).fetchone()
-        finally:
-            self.db.pool.put(conn)
-        if row:
-            v = row[0]
-            return v.decode() if isinstance(v, bytes) else str(v)
-        return None
-
-    # ── Export ────────────────────────────────────────────────────────────
-
-    def export_to_file(self, asset_id: int, output_dir: str = ".") -> Optional[str]:
-        asset = self.get_asset(asset_id)
-        if not asset:
-            return None
-
-        ep_num     = asset["ep_number"]
-        title      = asset["title"] or f"asset_{asset_id}"
-        prefix     = _make_ep_prefix(ep_num) if ep_num else ""
-        full_title = f"Ep {prefix} - {title}" if prefix else title
-        base       = _sanitize_filename(full_title) or f"asset_{asset_id}"
-
-        # Path-traversal guard: ensure output stays inside output_dir.
-        out_dir     = Path(output_dir).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        target_path = (out_dir / f"{base}.mp4").resolve()
-        if not str(target_path).startswith(str(out_dir)):
-            log.error("Path traversal attempt blocked: %s", target_path)
-            return None
-
-        chunks = list(self.iter_chunks(asset_id))
-        if not chunks:
-            log.error("No chunks for asset %d", asset_id)
-            return None
-
-        if self.get_meta(asset_id, "type") == "hls":
-            return self._export_hls(chunks, target_path)
-
-        with open(target_path, "wb") as fh:
-            for chunk in chunks:
-                fh.write(chunk)
-        return str(target_path)
-
-    def _export_hls(self, chunks: List[bytes], target_path: Path) -> Optional[str]:
-        tmp_ts: Optional[str] = None
-        try:
-            fd, tmp_ts = tempfile.mkstemp(suffix=".ts", prefix="pb_")
-            with os.fdopen(fd, "wb") as f:
-                for chunk in chunks:
-                    f.write(chunk)
-
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", tmp_ts, "-c", "copy", "-movflags", "+faststart",
-                 str(target_path)],
-                capture_output=True, timeout=600,
-            )
-            if result.returncode == 0:
-                return str(target_path)
-
-            stderr = result.stderr.decode(errors="replace").strip()
-            console.print(f"  [yellow]⚠ ffmpeg failed — saving .ts[/yellow]\n  [dim]{stderr[-200:]}[/dim]")
-
-        except FileNotFoundError:
-            console.print("  [yellow]⚠ ffmpeg not found — saving .ts instead[/yellow]")
-        except subprocess.TimeoutExpired:
-            console.print("  [yellow]⚠ ffmpeg timed out — saving .ts instead[/yellow]")
-        except Exception as exc:
-            console.print(f"  [red]✗ Export error: {exc}[/red]")
-        finally:
-            if tmp_ts:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_ts)
-
-        out_ts = target_path.with_suffix(".ts")
-        with open(out_ts, "wb") as f:
-            for chunk in chunks:
-                f.write(chunk)
-        return str(out_ts)
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# 7.  FLARESOLVERR CLIENT  (session lifecycle management + retry + cache)
-# ═════════════════════════════════════════════════════════════════════════
-
-_solver_cache  = LRUCache(max_size=256, ttl=120.0)
-_aes_key_cache = LRUCache(max_size=128, ttl=3600.0)
-
 
 class Solver:
     """
-    FlareSolverr wrapper with session reuse, retry, LRU cache,
-    and guaranteed session teardown on exit.
+    FlareSolverr wrapper with session reuse, retry, and TTL cache.
+    Only one browser action runs at a time (_sem), but the cache means
+    repeated episode-page fetches (common in stream mode) are free.
     """
 
     _session_id: Optional[str] = None
-    _lock         = threading.Lock()
-    _request_sem  = threading.Semaphore(1)  # one browser action at a time
+    _lock = threading.Lock()
+    _sem  = threading.Semaphore(1)  # one Chromium action at a time
+
+    # ── Low-level POST ────────────────────────────────────────────────────
+
+    @classmethod
+    def _post(cls, body: Dict, timeout: int = 90) -> Optional[Dict]:
+        req = urllib.request.Request(
+            FLARESOLVERR_URL,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.load(r)
+        except Exception as exc:
+            log.debug("FlareSolverr POST: %s", exc)
+            return None
 
     # ── Session lifecycle ─────────────────────────────────────────────────
 
     @classmethod
-    def _init_session(cls) -> None:
+    def ping(cls) -> bool:
+        """Return True if FlareSolverr is reachable (used for startup check)."""
         try:
-            req = urllib.request.Request(
-                FLARESOLVERR_URL,
-                data=json.dumps({"cmd": "sessions.create"}).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.load(resp)
-                if data.get("status") == "ok":
-                    cls._session_id = data.get("session")
-                    log.info("FlareSolverr session created: %s", cls._session_id)
-        except Exception as exc:
-            log.debug("FlareSolverr session create failed: %s", exc)
+            base = FLARESOLVERR_URL
+            if base.endswith("/v1"):
+                base = base[:-3]
+            req = urllib.request.Request(base + "/health", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.load(r).get("status") == "ok"
+        except Exception:
+            return False
+
+    @classmethod
+    def _ensure_session(cls) -> None:
+        with cls._lock:
+            if cls._session_id:
+                return
+        data = cls._post({"cmd": "sessions.create"}, timeout=15)
+        if data and data.get("status") == "ok":
+            sid = data.get("session")
+            with cls._lock:
+                cls._session_id = sid
+            log.info("FlareSolverr session created: %s", sid)
 
     @classmethod
     def destroy_session(cls) -> None:
-        """
-        Destroy the active Chromium session inside FlareSolverr.
-        Terminates the browser process and frees RAM without stopping
-        the FlareSolverr container itself.
-        """
         with cls._lock:
-            sid = cls._session_id
-            if not sid:
-                return
-            cls._session_id = None
+            sid, cls._session_id = cls._session_id, None
+        if sid:
+            cls._post({"cmd": "sessions.destroy", "session": sid}, timeout=10)
+            log.info("FlareSolverr session %s destroyed.", sid)
 
-        try:
-            req = urllib.request.Request(
-                FLARESOLVERR_URL,
-                data=json.dumps({"cmd": "sessions.destroy", "session": sid}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.load(resp)
-                if data.get("status") == "ok":
-                    log.info("FlareSolverr session %s destroyed.", sid)
-                else:
-                    log.warning("FlareSolverr destroy: %s", data.get("message"))
-        except Exception as exc:
-            log.debug("FlareSolverr session destroy failed (harmless): %s", exc)
-
-    # ── Request ───────────────────────────────────────────────────────────
+    # ── Public request ────────────────────────────────────────────────────
 
     @classmethod
-    def request(cls, url: str, use_cache: bool = True) -> Optional[Dict]:
-        if use_cache and (cached := _solver_cache.get(url)) is not None:
-            return cached
+    def request(cls, url: str, cache: bool = True) -> Optional[Dict]:
+        if cache and (hit := _solver_cache.get(url)) is not None:
+            return hit
 
-        with cls._request_sem:
-            with cls._lock:
-                if not cls._session_id:
-                    cls._init_session()
-
+        with cls._sem:
+            cls._ensure_session()
             for attempt in range(RETRY_ATTEMPTS):
-                try:
-                    body: Dict[str, Any] = {
-                        "cmd": "request.get",
-                        "url": url,
-                        "maxTimeout": 60000,
-                        "wait": 2000,
-                    }
+                body: Dict[str, Any] = {
+                    "cmd": "request.get",
+                    "url": url,
+                    "maxTimeout": 60000,
+                    "wait": 2000,
+                }
+                with cls._lock:
                     if cls._session_id:
                         body["session"] = cls._session_id
 
-                    req = urllib.request.Request(
-                        FLARESOLVERR_URL,
-                        data=json.dumps(body).encode(),
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    )
-                    with urllib.request.urlopen(req, timeout=90) as resp:
-                        data = json.load(resp)
-
-                    if data.get("status") == "ok":
-                        sol = data.get("solution")
-                        if sol and use_cache:
-                            _solver_cache.set(url, sol)
-                        return sol
-
-                    msg = data.get("message", "")
-                    log.warning("FlareSolverr: %s", msg)
-
-                    if "Error: Error: Session" in msg or "not found" in msg.lower():
-                        with cls._lock:
-                            cls._session_id = None
-                        if attempt < RETRY_ATTEMPTS - 1:
-                            with cls._lock:
-                                cls._init_session()
-                            continue
-                    break
-
-                except urllib.error.URLError as exc:
-                    log.error("FlareSolverr connection error (attempt %d): %s", attempt + 1, exc)
+                data = cls._post(body)
+                if not data:
                     if attempt < RETRY_ATTEMPTS - 1:
                         time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
-                except Exception as exc:
-                    log.error("FlareSolverr unexpected error: %s", exc)
+                    continue
+
+                if data.get("status") == "ok":
+                    sol = data.get("solution")
+                    if sol and cache:
+                        _solver_cache.set(url, sol)
+                    return sol
+
+                msg = data.get("message", "")
+                log.warning("FlareSolverr: %s", msg)
+
+                if "session" in msg.lower() or "not found" in msg.lower():
+                    with cls._lock:
+                        cls._session_id = None
+                    cls._ensure_session()
+                else:
                     break
 
         return None
 
-    # ── JSON / HTML helpers ───────────────────────────────────────────────
+    # ── Convenience helpers ───────────────────────────────────────────────
 
     @classmethod
     def fetch_json(cls, url: str) -> Optional[Dict]:
         sol  = cls.request(url)
-        body = sol.get("response", "") if sol else ""
+        body = (sol or {}).get("response", "")
         if not body:
             return None
-
-        # Strategy 1: Chromium renders raw JSON inside a <pre> tag.
-        for pre_m in re.finditer(r'<pre[^>]*>([\s\S]*?)</pre>', body, re.I):
-            text = (pre_m.group(1).strip()
-                    .replace('&amp;', '&').replace('&lt;', '<')
-                    .replace('&gt;', '>').replace('&quot;', '"')
-                    .replace('&#39;', "'"))
+        # Strategy 1: raw JSON inside a <pre> tag (Chromium renders it this way)
+        for m in re.finditer(r'<pre[^>]*>([\s\S]*?)</pre>', body, re.I):
+            txt = (m.group(1)
+                   .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                   .replace("&quot;", '"').replace("&#39;", "'").strip())
             with contextlib.suppress(json.JSONDecodeError):
-                return json.loads(text)
-
-        # Strategy 2: Strip all HTML tags.
+                return json.loads(txt)
+        # Strategy 2: strip all HTML tags
         with contextlib.suppress(json.JSONDecodeError):
-            return json.loads(re.sub(r'<[^>]+>', '', body).strip())
-
-        # Strategy 3: Walk character-by-character to find the first JSON object.
-        start = body.find('{')
-        if start != -1:
-            depth  = 0
-            in_str = False
-            escape = False
+            return json.loads(re.sub(r"<[^>]+>", "", body).strip())
+        # Strategy 3: walk to first { … } object
+        start = body.find("{")
+        if start >= 0:
+            depth = in_str = escape = 0
             for i, ch in enumerate(body[start:], start):
-                if escape:
-                    escape = False
-                    continue
-                if ch == '\\' and in_str:
-                    escape = True
-                    continue
-                if ch == '"':
-                    in_str = not in_str
-                    continue
-                if in_str:
-                    continue
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
+                if escape:      escape = 0;  continue
+                if ch == "\\" and in_str: escape = 1; continue
+                if ch == '"':   in_str ^= 1; continue
+                if in_str:      continue
+                if ch == "{":   depth += 1
+                elif ch == "}":
                     depth -= 1
                     if depth == 0:
                         with contextlib.suppress(json.JSONDecodeError):
@@ -861,20 +570,18 @@ class Solver:
         return sol.get("response", ""), sol.get("cookies", [])
 
 
-# Register guaranteed teardown on any exit (normal, exception, Ctrl-C).
 atexit.register(Solver.destroy_session)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 8.  KWIK / ANIMEPAHE EXTRACTION
+# 7.  KWIK / ANIMEPAHE EXTRACTION
 # ═════════════════════════════════════════════════════════════════════════
 
 _KWIK_DOMAINS = r"kwik\.(?:si|cx|pw|gg|me|net|to|in|cc)"
-_KWIK_RE      = re.compile(rf"https?://(?:{_KWIK_DOMAINS})/(?:e|f)/\w+", re.IGNORECASE)
 
 
 class JsPacker:
-    """Decode eval-based JS packer (p,a,c,k,e,d pattern used by Kwik)."""
+    """Decode eval-based JS packer (p,a,c,k,e,d) used by Kwik."""
 
     @staticmethod
     def unpack(packed: str) -> str:
@@ -886,8 +593,8 @@ class JsPacker:
             return packed
         payload, base_s, count_s, mapping_s = m.groups()
         base, count = int(base_s), int(count_s)
-        mapping     = mapping_s.split("|")
-        digits      = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        mapping = mapping_s.split("|")
+        digits  = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
         def enc(c: int) -> str:
             return digits[c] if c < base else enc(c // base) + digits[c % base]
@@ -899,244 +606,134 @@ class JsPacker:
         return re.sub(r"\b\w+\b", lambda mo: lookup.get(mo.group(0), mo.group(0)), payload)
 
 
-def _extract_m3u8_from_kwik_html(html: str) -> Optional[str]:
+def _extract_m3u8(html: str) -> Optional[str]:
     """Three-strategy M3U8 URL extraction from a Kwik HTML page."""
-    # Strategy 1: bare m3u8 URL in HTML
     m = re.search(r"(https?://[^\s'\"\\>]+(?:uwu\.m3u8|\.m3u8)[^\s'\"\\>]*)", html)
     if m:
         return m.group(1).replace("\\/", "/").rstrip("\\")
 
-    # Strategy 2: JS packer (iterative unpack)
-    scripts = re.findall(r"<script[^>]*>([\s\S]*?)</script>", html, re.IGNORECASE)
-    for script in sorted(scripts, key=len, reverse=True):
-        current = script
+    for script in sorted(
+        re.findall(r"<script[^>]*>([\s\S]*?)</script>", html, re.IGNORECASE),
+        key=len, reverse=True,
+    ):
+        cur = script
         for _ in range(6):
-            inner = re.search(r'eval\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)', current)
+            inner = re.search(r'eval\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)', cur)
             if inner:
-                current = inner.group(1).encode().decode("unicode_escape", errors="ignore")
+                cur = inner.group(1).encode().decode("unicode_escape", errors="ignore")
                 continue
-            unpacked = JsPacker.unpack(current)
-            if unpacked != current:
-                current = unpacked
+            unpacked = JsPacker.unpack(cur)
+            if unpacked != cur:
+                cur = unpacked
                 continue
             break
-        m = re.search(r"(https?://[^\s'\"\\>]+(?:uwu\.m3u8|\.m3u8)[^\s'\"\\>]*)", current)
+        m = re.search(r"(https?://[^\s'\"\\>]+(?:uwu\.m3u8|\.m3u8)[^\s'\"\\>]*)", cur)
         if m:
             return m.group(1).replace("\\/", "/").rstrip("\\")
 
-    # Strategy 3: <source> element
     m = re.search(r'<source[^>]+src=["\']([^"\']+\.m3u8[^"\']*)["\']', html, re.IGNORECASE)
-    if m:
-        return m.group(1)
-
-    return None
+    return m.group(1) if m else None
 
 
-def _find_kwik_links(html: str) -> List[str]:
-    """
-    Locate Kwik embed URLs from an AnimePahe episode page HTML.
-    Returns a de-duplicated list in priority order.
-    """
-    # Priority 1: redirect-class links (most reliable)
-    redirects = re.findall(
-        rf'href=["\'](https?://{_KWIK_DOMAINS}/[ef]/\w+)["\'][^>]+class=["\'][^"\']*redirect[^"\']*["\']',
-        html, re.I,
-    )
-    if redirects:
-        return list(dict.fromkeys(redirects))
-
-    # Priority 2: data-src within a player container
-    player_box = re.search(
-        r'<(?:div|section)[^>]+(?:id|class)=["\'](?:video-)?player["\'][^>]*>(.*?)</(?:div|section)>',
-        html, re.I | re.S,
-    )
-    if player_box:
-        data_srcs = re.findall(
-            rf'data-src=["\'](https?://{_KWIK_DOMAINS}/[ef]/\w+)["\']',
-            player_box.group(1), re.I,
-        )
-        if data_srcs:
-            return list(dict.fromkeys(data_srcs))
-
-    # Priority 3: any data-src with a kwik domain
-    return list(dict.fromkeys(re.findall(
-        rf'data-src=["\'](https?://{_KWIK_DOMAINS}/[ef]/\w+)["\']', html, re.I,
-    )))
-
-
-def _resolve_one_kwik(kwik_url: str) -> Optional[Dict]:
-    sol = Solver.request(kwik_url, use_cache=False)
-    if not sol or "response" not in sol:
+def _resolve_kwik(url: str) -> Optional[StreamInfo]:
+    sol = Solver.request(url, cache=False)
+    if not sol:
         return None
-
-    html       = sol["response"]
+    html       = sol.get("response", "")
     cookies    = sol.get("cookies", [])
     user_agent = sol.get("userAgent", "Mozilla/5.0")
-
-    direct    = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
-    video_url = direct.group(1) if direct else _extract_m3u8_from_kwik_html(html)
-
+    direct     = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
+    video_url  = direct.group(1) if direct else _extract_m3u8(html)
     if video_url:
-        return {"url": video_url, "cookies": cookies, "user_agent": user_agent, "referer": kwik_url}
+        return StreamInfo(url=video_url, cookies=cookies,
+                          user_agent=user_agent, referer=url)
     return None
-
-
-def _has_dub_attribute(tag_attrs: str) -> bool:
-    """Check if an HTML tag's attributes contain data-audio="eng"."""
-    return bool(re.search(r'''data-audio\s*=\s*["']eng["']''', tag_attrs, re.I))
 
 
 def _parse_resolution_buttons(html: str) -> List[Tuple[int, str, bool, str]]:
-    """
-    Extract quality options from <button> tags inside the resolution menu.
-    Returns a list of (resolution, kwik_url, is_dub, fansub_group).
-    """
     entries: List[Tuple[int, str, bool, str]] = []
-
-    # Look for the resolution menu container; it's typically a div with id "resolutionMenu"
-    menu_match = re.search(
-        r'<div[^>]+id=["\']resolutionMenu["\'][^>]*>(.*?)</div>', html, re.I | re.S
-    )
-    if not menu_match:
+    menu_m = re.search(r'<div[^>]+id=["\']resolutionMenu["\'][^>]*>(.*?)</div>',
+                       html, re.I | re.S)
+    if not menu_m:
         return entries
-
-    menu_html = menu_match.group(1)
-
-    # Find all buttons inside the menu
-    for btn_match in re.finditer(r'<button\b([^>]*?)>(.*?)</button>', menu_html, re.I | re.S):
-        attrs = btn_match.group(1)
-        text = btn_match.group(2).strip()
-
+    for btn_m in re.finditer(r'<button\b([^>]*?)>(.*?)</button>',
+                              menu_m.group(1), re.I | re.S):
+        attrs = btn_m.group(1)
+        text  = btn_m.group(2).strip()
         src_m = re.search(r'data-src=["\']([^"\']+kwik\.[^"\']+)["\']', attrs, re.I)
         if not src_m:
             continue
         kwik_url = src_m.group(1)
-
-        # 1) Try data-resolution attribute first (most reliable)
         res_m = re.search(r'data-resolution=["\']?(\d+)["\']?', attrs, re.I)
         if res_m:
-            resolution = int(res_m.group(1))
+            res = int(res_m.group(1))
         else:
-            # 2) Fallback: parse resolution from button text (e.g. "1080p")
             res_m = re.match(r'(\d+)\s*p', text, re.I)
             if not res_m:
                 continue
-            resolution = int(res_m.group(1))
-
-        is_dub = _has_dub_attribute(attrs)
-
-        # Extract fansub group
+            res = int(res_m.group(1))
+        is_dub   = bool(re.search(r'''data-audio\s*=\s*["']eng["']''', attrs, re.I))
         fansub_m = re.search(r'data-fansub=["\']([^"\']+)["\']', attrs, re.I)
-        if fansub_m:
-            fansub = fansub_m.group(1)
-        else:
-            parts = text.split("·")
-            fansub = parts[0].strip() if parts else ""
-
-        entries.append((resolution, kwik_url, is_dub, fansub))
-
+        fansub   = fansub_m.group(1) if fansub_m else (text.split("·")[0].strip())
+        entries.append((res, kwik_url, is_dub, fansub))
     return entries
 
 
-def extract_animepahe_stream(
-    episode_url: str,
-    preferred_quality: int = 1080,
-    prefer_audio: str = "jpn",
-) -> Dict[str, Any]:
+def extract_stream(play_url: str, quality: int = 1080, audio: str = "jpn") -> StreamInfo:
     """
-    Resolve an AnimePahe play-page URL to a streamable M3U8.
-
-    Quality selection:
-    - Prefers the highest quality ≤ preferred_quality.
-    - Falls back to the lowest available if every option exceeds the preference.
-
-    Audio selection:
-    - When `prefer_audio` is "jpn", dub (data-audio="eng") links are excluded.
-    - When `prefer_audio` is "eng", only dub links are kept.
-    - If no links match the preference after filtering, all links are used
-      (graceful fallback).
+    Resolve an AnimePahe play URL to a StreamInfo.
+    Raises RuntimeError if resolution fails.
     """
-    sol = Solver.request(episode_url, use_cache=True)
-    if not sol or "response" not in sol:
+    sol = Solver.request(play_url, cache=True)
+    if not sol:
         raise RuntimeError("FlareSolverr failed to fetch episode page")
 
-    html = sol["response"]
+    html    = sol["response"]
+    entries = _parse_resolution_buttons(html)
 
-    # ── Parse resolution buttons ─────────────────────────────────────────
-    entries = _parse_resolution_buttons(html)  # (res, url, is_dub, fansub)
-
-    # ── Fallback: resolution embedded in link text ────────────────────────
-    if not entries:
-        quality_map: Dict[int, Tuple[str, bool, str]] = {}
-        for kwik_url, q_str in re.findall(
+    quality_map: Dict[int, Tuple[str, bool, str]] = {}
+    if entries:
+        filtered = [e for e in entries if (not e[2] if audio == "jpn" else e[2])]
+        if not filtered:
+            log.warning("Audio filter (%s) removed all links — using all", audio)
+            filtered = entries
+        for res, url, is_dub, fansub in filtered:
+            quality_map.setdefault(res, (url, is_dub, fansub))
+    else:
+        for url, q_str in re.findall(
             r'(?:href|data-src)=["\']([^"\']*kwik\.[^"\']+)["\'][^>]*>\s*(?:\S+\s+)?(\d+)p',
             html, re.I,
         ):
             with contextlib.suppress(ValueError):
-                quality_map[int(q_str)] = (kwik_url, False, "")
-    else:
-        # ── Audio filtering ───────────────────────────────────────────────
-        if prefer_audio == "jpn":
-            filtered_entries = [e for e in entries if not e[2]]  # not dub
-        else:  # "eng"
-            filtered_entries = [e for e in entries if e[2]]      # is dub
-
-        if not filtered_entries:
-            log.warning(
-                "Audio filter (%s) would remove all links — using all available.",
-                prefer_audio,
-            )
-            filtered_entries = entries
-
-        # Build final quality map (resolution → (url, is_dub, fansub))
-        quality_map = {}
-        for resolution, url, is_dub, fansub in filtered_entries:
-            if resolution not in quality_map:
-                quality_map[resolution] = (url, is_dub, fansub)
-            # If duplicate resolutions exist after filtering, we keep the first
-            # (subbed entries appear before dubbed in the menu).
-
-    chosen_kwik: Optional[str] = None
-    is_dub:      bool          = False
-    fansub:      str           = ""
+                quality_map.setdefault(int(q_str), (url, False, ""))
 
     if quality_map:
-        sorted_quals = sorted(quality_map.keys(), reverse=True)
-        for q in sorted_quals:
-            if q <= preferred_quality:
-                chosen_kwik, is_dub, fansub = quality_map[q]
-                break
-        if not chosen_kwik:
-            chosen_kwik, is_dub, fansub = quality_map[sorted_quals[-1]]
-        log.debug(
-            "Quality map: %s  |  preferred: %dp  |  chosen: %dp  |  audio: %s",
-            sorted(quality_map), preferred_quality,
-            next(q for q, v in quality_map.items() if v[0] == chosen_kwik),
-            prefer_audio,
-        )
+        qs = sorted(quality_map, reverse=True)
+        chosen_q = next((q for q in qs if q <= quality), qs[-1])
+        chosen_url, is_dub, fansub = quality_map[chosen_q]
     else:
-        # Method 3: generic Kwik-link scan (no resolution metadata)
-        kwik_links = _find_kwik_links(html)
+        kwik_links = re.findall(
+            rf'data-src=["\']?(https?://{_KWIK_DOMAINS}/[ef]/\w+)["\']?', html, re.I
+        )
         if not kwik_links:
             raise RuntimeError("No Kwik link found on episode page")
-        chosen_kwik = kwik_links[0]
-        log.debug("Quality metadata absent; falling back to first Kwik link.")
+        chosen_url, is_dub, fansub = kwik_links[0], False, ""
 
     title_m = re.search(r"<title>([^<]+)</title>", html)
-    title   = title_m.group(1).strip() if title_m else "AnimePahe episode"
+    title   = title_m.group(1).strip() if title_m else ""
 
-    info = _resolve_one_kwik(chosen_kwik)
-    if info:
-        info["title"]  = title
-        info["audio"]  = "eng" if is_dub else "jpn"
-        info["fansub"] = fansub
-        return info
+    info = _resolve_kwik(chosen_url)
+    if not info:
+        raise RuntimeError(f"Could not resolve Kwik URL: {chosen_url}")
 
-    raise RuntimeError(f"Could not resolve Kwik URL: {chosen_kwik}")
+    info.title  = title
+    info.audio  = "eng" if is_dub else "jpn"
+    info.fansub = fansub
+    return info
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 9.  M3U8 PARSER
+# 8.  M3U8 PARSER
 # ═════════════════════════════════════════════════════════════════════════
 
 def _fetch_text(url: str, headers: Optional[Dict] = None, timeout: int = 30) -> str:
@@ -1145,163 +742,195 @@ def _fetch_text(url: str, headers: Optional[Dict] = None, timeout: int = 30) -> 
         return r.read().decode("utf-8", errors="replace")
 
 
-def parse_m3u8_segments(content: str, base_url: str) -> List[Dict[str, Any]]:
-    """
-    Parse an HLS manifest and return a list of segment dicts.
-    Handles master playlists (recursively resolves the last variant),
-    AES-128 encryption headers, and custom IV values.
-    """
+def parse_m3u8(content: str, base_url: str) -> List[Dict[str, Any]]:
+    """Parse HLS manifest → list of segment dicts. Handles master playlists & AES-128."""
     lines = content.splitlines()
 
-    # Master playlist — recurse into the last (highest) variant.
+    # Master playlist — resolve last (highest) variant
     if "#EXT-X-STREAM-INF" in content:
-        variants: List[str] = []
-        for i, line in enumerate(lines):
-            if line.startswith("#EXT-X-STREAM-INF") and i + 1 < len(lines):
-                variants.append(urllib.parse.urljoin(base_url, lines[i + 1].strip()))
+        variants = [
+            urllib.parse.urljoin(base_url, lines[i + 1].strip())
+            for i, line in enumerate(lines)
+            if line.startswith("#EXT-X-STREAM-INF") and i + 1 < len(lines)
+        ]
         if variants:
             sub = _fetch_text(variants[-1])
-            return parse_m3u8_segments(sub, variants[-1])
+            return parse_m3u8(sub, variants[-1])
 
     segments: List[Dict[str, Any]] = []
-    key_url:  Optional[str]        = None
-    key_iv:   Optional[bytes]      = None
-    seq_num:  int                  = 0
+    key_url = key_iv = None
+    seq_num = 0
 
     for line in lines:
         line = line.strip()
         if not line:
             continue
         if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
-            with contextlib.suppress(ValueError, IndexError):
+            with contextlib.suppress(ValueError):
                 seq_num = int(line.split(":", 1)[1])
         elif line.startswith("#EXT-X-KEY:"):
-            kv: Dict[str, str] = {}
-            for k, vq, vr in re.findall(r'([^,="]+)=(?:"([^"]+)"|([^,]+))', line[11:]):
-                kv[k] = vq or vr
+            kv = {k: vq or vr
+                  for k, vq, vr in re.findall(r'([^,="]+)=(?:"([^"]+)"|([^,]+))', line[11:])}
             if kv.get("METHOD") == "AES-128":
-                if uri := kv.get("URI"):
-                    key_url = urllib.parse.urljoin(base_url, uri)
+                if "URI" in kv:
+                    key_url = urllib.parse.urljoin(base_url, kv["URI"])
                 if iv_hex := kv.get("IV"):
-                    clean_hex = iv_hex.lstrip("0xX").lstrip("0X")
-                    if len(clean_hex) % 2:
-                        clean_hex = "0" + clean_hex
-                    key_iv = bytes.fromhex(clean_hex)
+                    h = iv_hex.lstrip("0xX").lstrip("0X")
+                    key_iv = bytes.fromhex(("0" + h) if len(h) % 2 else h)
                 else:
                     key_iv = None
             else:
-                key_url = None
-                key_iv  = None
+                key_url = key_iv = None
         elif not line.startswith("#"):
-            iv = key_iv if key_iv is not None else (
-                seq_num.to_bytes(16, "big") if key_url else None
-            )
-            segments.append({
-                "url":     urllib.parse.urljoin(base_url, line),
-                "key_url": key_url,
-                "iv":      iv,
-            })
+            iv = key_iv or (seq_num.to_bytes(16, "big") if key_url else None)
+            segments.append({"url": urllib.parse.urljoin(base_url, line),
+                              "key_url": key_url, "iv": iv})
             seq_num += 1
 
     return segments
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 10.  PROGRESS DASHBOARD
+# 9.  DASHBOARD  (two-tier progress; refresh_per_second=12 for fluidity)
 # ═════════════════════════════════════════════════════════════════════════
 
 class Dashboard:
-    """Two-tier Rich progress display: one bar per episode + segment sub-bar."""
+    """
+    Clean single-row-per-episode progress.
+    No nested progress bars -- segment status is shown as a compact counter.
+    """
 
-    def __init__(self) -> None:
-        self._prog = Progress(
-            SpinnerColumn(style="cyan"),
-            TextColumn("[bold white]{task.description:<46}"),
-            BarColumn(bar_width=None, style="cyan", complete_style="bold green"),
+    def __init__(self, total_eps: int) -> None:
+        self._total_eps = total_eps
+        self._done_eps  = 0
+        self._tasks: Dict[str, TaskID] = {}
+        self._live: Optional[Live]     = None
+
+        self._progress = Progress(
+            SpinnerColumn(style="cyan", finished_text=" "),
+            TextColumn("[bold white]{task.description:<32}"),
+            BarColumn(bar_width=16, style="cyan", complete_style="bold green"),
             TextColumn("[bold green]{task.percentage:>5.1f}%"),
+            TextColumn("[dim cyan]{task.fields[seg_text]:>12}[/dim cyan]"),
             DownloadColumn(),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
-            console=console, expand=True,
+            console=console,
+            expand=False,
         )
-        self._seg_prog = Progress(
-            TextColumn("   [dim]└─[/dim]"),
-            TextColumn("[dim]{task.description}[/dim]"),
-            BarColumn(bar_width=24, style="dim cyan", complete_style="dim green"),
-            MofNCompleteColumn(),
-            console=console, expand=True,
-        )
-        self._live:     Optional[Live]       = None
-        self._task_map: Dict[int, TaskID]    = {}
-        self._seg_map:  Dict[int, TaskID]    = {}
 
     def start(self) -> None:
-        panel      = Panel(
-            Group(self._prog, self._seg_prog),
-            title="[bold cyan]pahe-batcher — Downloading[/bold cyan]",
-            border_style="cyan", box=box.ROUNDED,
+        self._live = Live(
+            Panel(
+                self._progress,
+                title=f"[bold cyan]pahe-batcher[/bold cyan]  [dim]v{VERSION}  -  {self._total_eps} episodes[/dim]",
+                border_style="cyan",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            ),
+            console=console,
+            refresh_per_second=8,
         )
-        self._live = Live(panel, console=console, refresh_per_second=10)
         self._live.start()
 
     def stop(self) -> None:
         if self._live:
             self._live.stop()
 
-    def add_asset(self, asset_id: int, label: str, total: int = 0) -> TaskID:
-        if asset_id in self._task_map:
-            self._prog.update(self._task_map[asset_id], description=label[:46])
-            return self._task_map[asset_id]
-        tid = self._prog.add_task(label[:46], total=total or None)
-        self._task_map[asset_id] = tid
-        return tid
+    # -- Task lifecycle ---------------------------------------------------
 
-    def set_total(self, asset_id: int, total: int) -> None:
-        if (tid := self._task_map.get(asset_id)) is not None:
-            self._prog.update(tid, total=total)
+    def add_ep(self, key: str, label: str, total_bytes: int = 0) -> None:
+        if key not in self._tasks:
+            kwargs: Dict[str, Any] = {"seg_text": "", "seg_total": 0, "seg_done": 0}
+            if total_bytes:
+                kwargs["total"] = total_bytes
+            self._tasks[key] = self._progress.add_task(label[:32], **kwargs)
+        elif (tid := self._tasks.get(key)):
+            self._progress.update(tid, description=label[:32])
+            if total_bytes and not self._progress.tasks[tid].total:
+                self._progress.update(tid, total=total_bytes)
 
-    def add_segment_bar(self, asset_id: int, label: str, n: int) -> TaskID:
-        tid = self._seg_prog.add_task(label, total=n)
-        self._seg_map[asset_id] = tid
-        return tid
+    def set_total(self, key: str, n: int) -> None:
+        if tid := self._tasks.get(key):
+            self._progress.update(tid, total=n)
 
-    def segment_done(self, asset_id: int, byte_len: int) -> None:
-        if (tid := self._seg_map.get(asset_id)) is not None:
-            self._seg_prog.update(tid, advance=1)
-        if (tid := self._task_map.get(asset_id)) is not None:
-            self._prog.update(tid, advance=byte_len)
+    def set_segment_total(self, key: str, total: int) -> None:
+        if tid := self._tasks.get(key):
+            self._progress.update(tid, seg_total=total, seg_done=0, seg_text=f"0/{total}")
 
-    def remuxing(self, asset_id: int, label: str) -> None:
-        if (tid := self._task_map.get(asset_id)) is not None:
-            self._prog.update(tid, description=f"[yellow]⟳ Remuxing  {label[:36]}[/yellow]")
-        if (tid := self._seg_map.get(asset_id)) is not None:
-            self._seg_prog.update(tid, visible=False)
+    def seg_done(self, key: str, nbytes: int) -> None:
+        if tid := self._tasks.get(key):
+            task = self._progress.tasks[tid]
+            done = (task.fields.get("seg_done", 0) or 0) + 1
+            total = task.fields.get("seg_total", 0) or 0
+            seg_text = f"{done}/{total}" if total else ""
+            self._progress.update(tid, advance=nbytes, seg_done=done, seg_text=seg_text)
 
-    def complete(self, asset_id: int, label: str) -> None:
-        if (tid := self._task_map.get(asset_id)) is not None:
-            total = self._prog.tasks[tid].total or 1
-            self._prog.update(
+    # -- State transitions ------------------------------------------------
+
+    def mark_resolving(self, key: str, label: str) -> None:
+        if tid := self._tasks.get(key):
+            self._progress.update(tid, description=f"[dim]⟳ Resolving {label[:30]}[/dim]", seg_text="")
+
+    def mark_downloading(self, key: str, label: str) -> None:
+        if tid := self._tasks.get(key):
+            self._progress.update(tid, description=f"[white]{label[:32]}[/white]")
+
+    def mark_remuxing(self, key: str, label: str) -> None:
+        if tid := self._tasks.get(key):
+            self._progress.update(tid, description=f"[yellow]⟳ Remuxing {label[:30]}[/yellow]", seg_text="mux")
+
+    def mark_done(self, key: str, label: str) -> None:
+        self._done_eps += 1
+        if tid := self._tasks.get(key):
+            t = self._progress.tasks[tid]
+            total = t.total or t.completed or 1
+            self._progress.update(
                 tid,
-                description=f"[green]{label[:46]}[/green]",
-                completed=total, total=total,
+                description=f"[bold green]✓ {label[:32]}[/bold green]",
+                completed=total,
+                total=total,
+                seg_text="done",
             )
-            self._prog.stop_task(tid)
-        if (tid := self._seg_map.get(asset_id)) is not None:
-            self._seg_prog.update(tid, visible=False)
+            self._progress.stop_task(tid)
 
-    def fail(self, asset_id: int, reason: str) -> None:
-        if (tid := self._task_map.get(asset_id)) is not None:
-            self._prog.update(tid, description=f"[red]{reason[:46]}[/red]")
-            self._prog.stop_task(tid)
-        if (tid := self._seg_map.get(asset_id)) is not None:
-            self._seg_prog.update(tid, visible=False)
+    def mark_fail(self, key: str, reason: str) -> None:
+        if tid := self._tasks.get(key):
+            self._progress.update(
+                tid,
+                description=f"[red]✗ {reason[:32]}[/red]",
+                seg_text="fail",
+            )
+            self._progress.stop_task(tid)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 11.  ASYNC HTTP HELPERS
+# 10.  ASYNC HTTP HELPERS
 # ═════════════════════════════════════════════════════════════════════════
 
-async def _aio_fetch(
+def make_aio_session(hls_workers: int) -> "aiohttp.ClientSession":
+    """
+    Well-tuned aiohttp session for HLS segment fetching.
+    Using limit=0 (no global cap) with limit_per_host for per-CDN control.
+    keepalive_timeout reuses TCP connections across segments of the same stream.
+    """
+    connector = aiohttp.TCPConnector(
+        limit=0,                     # semaphore controls concurrency
+        limit_per_host=hls_workers,  # bounded per CDN host
+        ttl_dns_cache=300,           # 5-min DNS cache
+        keepalive_timeout=45,
+        enable_cleanup_closed=True,
+        ssl=make_ssl_ctx(),
+        use_dns_cache=True,
+    )
+    return aiohttp.ClientSession(
+        connector=connector,
+        timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_read=45),
+        connector_owner=True,
+    )
+
+
+async def aio_get(
     session: "aiohttp.ClientSession",
     url: str,
     headers: Optional[Dict] = None,
@@ -1319,11 +948,10 @@ async def _aio_fetch(
             if attempt == RETRY_ATTEMPTS - 1:
                 raise
             await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
-    # Logically unreachable: the loop always returns or raises on the last attempt.
-    raise AssertionError("_aio_fetch: exhausted retries without raising")  # pragma: no cover
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
-async def _urllib_fetch(url: str, headers: Optional[Dict] = None) -> bytes:
+async def urllib_get(url: str, headers: Optional[Dict] = None) -> bytes:
     """Async-compatible urllib GET with exponential-backoff retry."""
     def _sync() -> bytes:
         req = urllib.request.Request(url, headers=headers or {})
@@ -1335,166 +963,262 @@ async def _urllib_fetch(url: str, headers: Optional[Dict] = None) -> bytes:
                 if attempt == RETRY_ATTEMPTS - 1:
                     raise
                 time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
-        raise AssertionError("_urllib_fetch: exhausted retries without raising")  # pragma: no cover
-
-    return await asyncio.get_running_loop().run_in_executor(None, _sync)
+        raise AssertionError("unreachable")  # pragma: no cover
+    return await asyncio.get_event_loop().run_in_executor(None, _sync)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 12.  DOWNLOAD ENGINE  (HLS only)
+# 11.  EPISODE DOWNLOADER
 # ═════════════════════════════════════════════════════════════════════════
 
-class Downloader:
+class EpisodeDownloader:
+    """
+    Downloads one episode's HLS stream using the shared aiohttp session.
+    Writes segments directly to temp files (no SQLite overhead).
+    """
+
     def __init__(
         self,
-        db:   VaultDB,
-        mgr:  AssetManager,
+        anime_session: str,
+        cfg: DownloadConfig,
         dash: Dashboard,
-        cfg:  DownloadConfig,
+        session: Optional["aiohttp.ClientSession"],
     ) -> None:
-        self.db   = db
-        self.mgr  = mgr
-        self.dash = dash
-        self.cfg  = cfg
-        self._sem = asyncio.Semaphore(cfg.max_parallel)
+        self.anime_session = anime_session
+        self.cfg     = cfg
+        self.dash    = dash
+        self.session = session
 
-    async def download_asset(self, asset_id: int) -> None:
-        async with self._sem:
-            loop = asyncio.get_running_loop()
-            try:
-                asset = await loop.run_in_executor(None, self.mgr.get_asset, asset_id)
-                if not asset or asset["status"] in ("complete", "failed"):
-                    return
+    async def run(self, ep: EpisodeInfo, info: StreamInfo) -> Optional[Path]:
+        key   = ep.session
+        title = ep.title if ep.title and ep.title != "?" else (info.title or f"Episode {ep.ep_str}")
+        label = f"Ep {ep.ep_str} — {title}"
+        store = SegmentStore(self.anime_session, ep.session)
+        loop  = asyncio.get_event_loop()
 
-                ep_num = asset["ep_number"] or ""
-                title  = asset["title"] or asset["source_url"]
-                label  = f"Ep {ep_num} — {title}" if ep_num else title
-                self.dash.add_asset(asset_id, label)
-                await loop.run_in_executor(None, self.mgr.update_status, asset_id, "extracting")
+        # Build output path
+        outdir = Path(self.cfg.output_dir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        prefix = ep_prefix(ep.ep_str)
+        fname  = sanitize(f"Ep {prefix} - {title}") or f"ep_{ep.ep_str}"
+        out    = outdir / f"{fname}.mp4"
 
-                info = await loop.run_in_executor(
-                    None, extract_animepahe_stream, asset["source_url"],
-                    self.cfg.quality, self.cfg.audio_lang,
-                )
-                if info.get("audio"):
-                    await loop.run_in_executor(
-                        None, partial(self.mgr.update_status, asset_id, "downloading", audio=info["audio"])
-                    )
+        # Already on disk → skip
+        if out.exists() and out.stat().st_size > 0:
+            self.dash.mark_done(key, f"Ep {ep.ep_str} (already exists)")
+            return out
 
-                await self._download_hls(asset_id, info)
-
-            except Exception as exc:
-                log.exception("Asset %d failed", asset_id)
-                self.dash.fail(asset_id, f"✗ {str(exc)[:40]}")
-                await loop.run_in_executor(None, self.mgr.update_status, asset_id, "failed")
-
-    async def _download_hls(self, asset_id: int, info: Dict[str, Any]) -> None:
-        url        = info["url"]
-        user_agent = info.get("user_agent", "Mozilla/5.0")
-        referer    = info.get("referer", "")
-        title      = info.get("title", "HLS stream")
-        hdrs       = {"User-Agent": user_agent, "Referer": referer}
-        loop       = asyncio.get_running_loop()
-
-        m3u8_txt = await loop.run_in_executor(None, _fetch_text, url, hdrs)
-        segments  = parse_m3u8_segments(m3u8_txt, url)
-        if not segments:
-            raise RuntimeError("No segments found in m3u8")
-
-        # Determine final display title (prefer a real episode title over generic ones).
-        existing      = await loop.run_in_executor(None, self.mgr.get_asset, asset_id)
-        current_title = existing["title"] if existing else ""
-        if not current_title or "Episode" in current_title or "stream" in current_title.lower():
-            await loop.run_in_executor(
-                None, partial(self.mgr.update_status, asset_id, "downloading", title=title)
-            )
-        else:
-            await loop.run_in_executor(None, self.mgr.update_status, asset_id, "downloading")
-            title = current_title
-
-        ep_num = existing["ep_number"] if existing else ""
-        self.dash.add_asset(asset_id, f"Ep {ep_num} — {title}")
-
-        # Resume: skip segments already stored.
-        completed_indices = await loop.run_in_executor(
-            None, self.mgr.get_completed_segments, asset_id,
-        )
-        pending_segments  = [(i, s) for i, s in enumerate(segments) if i not in completed_indices]
-        n = len(segments)
-        self.dash.set_total(asset_id, n * _TS_SEGMENT_HINT_BYTES)
-        self.dash.add_segment_bar(asset_id, title[:36], n)
-
-        # Advance progress for already-complete segments.
-        for _ in range(len(completed_indices)):
-            self.dash.segment_done(asset_id, _TS_SEGMENT_HINT_BYTES)
-
-        # ── AES key prefetch ──────────────────────────────────────────────
-        key_map: Dict[str, bytes] = {}
-        session: Optional["aiohttp.ClientSession"] = None
-
-        if HAS_AIOHTTP:
-            ssl_ctx   = get_hardened_ssl_context()
-            connector = aiohttp.TCPConnector(limit=self.cfg.hls_workers, ssl=ssl_ctx)
-            session   = aiohttp.ClientSession(connector=connector)
+        self.dash.add_ep(key, label)
 
         try:
-            unique_key_urls = {s["key_url"] for s in segments if s["key_url"]}
-            for kurl in unique_key_urls:
-                if cached := _aes_key_cache.get(kurl):
-                    key_map[kurl] = cached
-                elif session:
-                    key_map[kurl] = await _aio_fetch(session, kurl, hdrs)
+            hdrs = info.headers
+
+            # Fetch M3U8
+            m3u8_txt = await loop.run_in_executor(None, _fetch_text, info.url, hdrs)
+            segments  = parse_m3u8(m3u8_txt, info.url)
+            if not segments:
+                raise RuntimeError("No segments found in M3U8")
+
+            n        = len(segments)
+            done_set = await loop.run_in_executor(None, store.done_indices)
+            pending  = [(i, s) for i, s in enumerate(segments) if i not in done_set]
+
+            self.dash.set_total(key, n * _SEG_HINT_BYTES)
+            self.dash.set_segment_total(key, n)
+            self.dash.mark_downloading(key, label)
+            # Advance progress bar for already-downloaded segments
+            for _ in done_set:
+                self.dash.seg_done(key, _SEG_HINT_BYTES)
+
+            # Prefetch AES keys (usually 0 or 1 unique key)
+            key_map: Dict[str, bytes] = {}
+            unique_keys = {s["key_url"] for s in segments if s["key_url"]}
+            for kurl in unique_keys:
+                if hit := _aes_key_cache.get(kurl):
+                    key_map[kurl] = hit
+                elif self.session:
+                    key_map[kurl] = await aio_get(self.session, kurl, hdrs)
                     _aes_key_cache.set(kurl, key_map[kurl])
                 else:
-                    key_map[kurl] = await _urllib_fetch(kurl, hdrs)
+                    key_map[kurl] = await urllib_get(kurl, hdrs)
                     _aes_key_cache.set(kurl, key_map[kurl])
 
+            # Segment semaphore — limits concurrent fetches for *this* episode
             seg_sem = asyncio.Semaphore(self.cfg.hls_workers)
 
-            async def fetch_seg(idx: int, seg: Dict[str, Any]) -> None:
+            async def fetch_one(idx: int, seg: Dict[str, Any]) -> None:
                 async with seg_sem:
-                    data = (await _aio_fetch(session, seg["url"], hdrs)
-                            if session else await _urllib_fetch(seg["url"], hdrs))
-
+                    raw = (
+                        await aio_get(self.session, seg["url"], hdrs)
+                        if self.session
+                        else await urllib_get(seg["url"], hdrs)
+                    )
                     if seg["key_url"]:
                         if not HAS_AES:
                             raise RuntimeError(
-                                "AES-128 stream requires pycryptodomex — "
-                                "run: pip install pycryptodomex"
+                                "AES-128 stream detected — install pycryptodomex:\n"
+                                "  pip install pycryptodomex"
                             )
                         cipher = AES.new(key_map[seg["key_url"]], AES.MODE_CBC, iv=seg["iv"])
-                        data   = cipher.decrypt(data)
+                        raw    = cipher.decrypt(raw)
 
-                    await loop.run_in_executor(
-                        None, self.mgr.store_single_chunk, asset_id, idx, data,
+                    await loop.run_in_executor(None, store.write_seg, idx, raw)
+                    self.dash.seg_done(key, len(raw))
+
+            # Fetch all pending segments concurrently
+            await asyncio.gather(
+                *(asyncio.create_task(fetch_one(i, s)) for i, s in pending)
+            )
+
+            # Assemble segments → MP4
+            self.dash.mark_remuxing(key, f"Ep {ep.ep_str}")
+            ok = await loop.run_in_executor(None, store.assemble, n, out)
+            if not ok:
+                raise RuntimeError("Assembly failed")
+
+            if not self.cfg.keep_temp:
+                await loop.run_in_executor(None, store.cleanup)
+
+            self.dash.mark_done(key, f"Ep {ep.ep_str} — {title[:34]}")
+            return out
+
+        except Exception as exc:
+            log.exception("Episode %s failed", ep.ep_str)
+            self.dash.mark_fail(key, f"Ep {ep.ep_str} — {str(exc)[:40]}")
+            return None
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 12.  BATCH DOWNLOADER — two-stage prefetch pipeline
+# ═════════════════════════════════════════════════════════════════════════
+
+class BatchDownloader:
+    """
+    Pipeline architecture:
+    ┌──────────────────────────────────────────────────────────────┐
+    │ Stage 1 (resolver)  — FlareSolverr, serialised               │
+    │   Resolves episode stream URLs one-by-one, slightly ahead     │
+    │   of the downloaders.  No idle time between episodes.         │
+    ├──────────────────────────────────────────────────────────────┤
+    │ Stage 2 (N workers) — HLS download, max_parallel concurrent   │
+    │   Shared aiohttp session → connection reuse across episodes.  │
+    │   Per-episode segment semaphore limits CDN load.              │
+    └──────────────────────────────────────────────────────────────┘
+    """
+
+    def __init__(self, anime: AnimeInfo, cfg: DownloadConfig) -> None:
+        self.anime   = anime
+        self.cfg     = cfg
+        self._results: Dict[str, Optional[Path]] = {}
+
+    async def run(self, episodes: List[EpisodeInfo]) -> Dict[str, Optional[Path]]:
+        loop  = asyncio.get_event_loop()
+        dash  = Dashboard(len(episodes))
+        start = time.time()
+
+        # One shared aiohttp session for all concurrent downloads
+        session: Optional["aiohttp.ClientSession"] = (
+            make_aio_session(self.cfg.hls_workers) if HAS_AIOHTTP else None
+        )
+
+        queue: "asyncio.Queue[Optional[Tuple[EpisodeInfo, StreamInfo]]]" = asyncio.Queue(
+            maxsize=self.cfg.max_parallel + 2  # small look-ahead buffer
+        )
+
+        # ── Stage 1: resolver ─────────────────────────────────────────────
+
+        async def resolver() -> None:
+            for ep in episodes:
+                # Show the episode in the dashboard immediately (resolving state)
+                dash.add_ep(ep.session, f"Ep {ep.ep_str} — {ep.title or '…'}")
+                dash.mark_resolving(ep.session, f"Ep {ep.ep_str}")
+                try:
+                    info = await loop.run_in_executor(
+                        None, extract_stream, ep.play_url,
+                        self.cfg.quality, self.cfg.audio_lang,
                     )
-                    self.dash.segment_done(asset_id, len(data))
+                    await queue.put((ep, info))
+                except Exception as exc:
+                    dash.mark_fail(ep.session, f"Ep {ep.ep_str}: {exc!s:.35}")
+                    self._results[ep.session] = None
+            # Sentinels — one per download worker
+            for _ in range(self.cfg.max_parallel):
+                await queue.put(None)
 
-            await asyncio.gather(*(asyncio.create_task(fetch_seg(i, s)) for i, s in pending_segments))
+        # ── Stage 2: download workers ─────────────────────────────────────
 
+        async def download_worker() -> None:
+            ep_dl = EpisodeDownloader(self.anime.session, self.cfg, dash, session)
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                ep, info = item
+                path = await ep_dl.run(ep, info)
+                self._results[ep.session] = path
+
+        # ── Run pipeline ──────────────────────────────────────────────────
+
+        dash.start()
+        try:
+            workers = [
+                asyncio.create_task(download_worker())
+                for _ in range(self.cfg.max_parallel)
+            ]
+            await asyncio.gather(asyncio.create_task(resolver()), *workers)
+            await asyncio.sleep(0.4)  # let final render flush
         finally:
+            dash.stop()
             if session:
                 await session.close()
 
-        # ── Finalise ──────────────────────────────────────────────────────
-        await loop.run_in_executor(None, self.mgr.store_meta, asset_id, "type", "hls")
+        self._print_summary(episodes, time.time() - start)
+        return self._results
 
-        total_bytes = await loop.run_in_executor(None, self.mgr.get_total_bytes, asset_id)
-        await loop.run_in_executor(
-            None, partial(self.mgr.update_status, asset_id, "complete", total_bytes=total_bytes),
+    def _print_summary(self, episodes: List[EpisodeInfo], elapsed: float) -> None:
+        h, rem    = divmod(int(elapsed), 3600)
+        m, s      = divmod(rem, 60)
+        time_str  = (f"{h}h {m}m {s}s" if h else f"{m}m {s}s" if m else f"{s}s")
+        ok        = sum(1 for v in self._results.values() if v is not None)
+        fail      = len(self._results) - ok
+
+        console.print()
+        console.print(Rule("[bold green] Download Complete [/bold green]", style="green"))
+
+        table = Table(
+            box=box.SIMPLE_HEAVY, show_header=True,
+            header_style="bold cyan", border_style="dim",
         )
+        table.add_column("Ep",     style="cyan",        width=6,  justify="right")
+        table.add_column("Title",  style="bold white",  ratio=1)
+        table.add_column("Audio",  width=5)
+        table.add_column("Status", justify="center",    width=10)
+        table.add_column("Size",   justify="right",     width=10, style="cyan")
+        table.add_column("File",   style="dim",         ratio=1)
 
-        ep_label = ep_num or ""
-        self.dash.remuxing(asset_id, f"Ep {ep_label}" if ep_label else title[:36])
+        for ep in episodes:
+            path   = self._results.get(ep.session)
+            badge  = "[bold green]✓  done[/bold green]" if path else "[red]✗ failed[/red]"
+            size   = fmt_bytes(path.stat().st_size) if path and path.exists() else "—"
+            fname  = path.name[:40] if path else "—"
+            table.add_row(
+                ep.ep_str, (ep.title or "—")[:36],
+                audio_badge(ep.audio), badge, size, fname,
+            )
 
-        exported = await loop.run_in_executor(
-            None, self.mgr.export_to_file, asset_id, self.cfg.output_dir,
-        )
-        if self.cfg.purge_db:
-            await loop.run_in_executor(None, self.mgr.delete_asset_chunks, asset_id)
+        console.print(table)
 
-        label = Path(exported).name if exported else f"✓ {title[:36]}"
-        self.dash.complete(asset_id, f"✓ {label}")
+        status_line = f"[bold green]✓ {ok} completed[/bold green]"
+        if fail:
+            status_line += f"  [bold red]✗ {fail} failed[/bold red]"
+
+        console.print(Panel(
+            f"  {status_line}\n"
+            f"  [dim]Time:[/dim]      [cyan]{time_str}[/cyan]\n"
+            f"  [dim]Saved to:[/dim]  {self.cfg.output_dir}",
+            border_style="green" if not fail else "yellow",
+            box=box.ROUNDED,
+        ))
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1506,25 +1230,25 @@ _UUID_RE = re.compile(
 )
 
 
-def _pahe_parse_url(url: str) -> Tuple[str, str]:
-    """Validate an AnimePahe series URL and return (host, anime_uuid)."""
+def parse_anime_url(url: str) -> Tuple[str, str]:
+    """Validate an AnimePahe series URL; return (host, anime_uuid)."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Unsupported scheme: {parsed.scheme!r}")
     if not parsed.netloc or "animepahe" not in parsed.netloc:
-        raise ValueError(f"Not an AnimePahe URL: {url}")
-    match = _UUID_RE.search(parsed.path)
-    if not match:
+        raise ValueError(f"Not an AnimePahe URL: {url!r}")
+    m = _UUID_RE.search(parsed.path)
+    if not m:
         raise ValueError(
             "No anime UUID in URL.\n"
             "  Expected: https://animepahe.ru/anime/<uuid>\n"
             f"  Got:      {url}"
         )
-    return parsed.netloc, match.group(0)
+    return parsed.netloc, m.group(0)
 
 
 class AnimePaheScanner:
-    def __init__(self, host: str, session: str = "") -> None:
+    def __init__(self, host: str, session: str) -> None:
         self.host    = host
         self.session = session
 
@@ -1543,55 +1267,51 @@ class AnimePaheScanner:
         if not result:
             return "Unknown Anime"
         html, _ = result
-        m = re.search(r"<h1[^>]*>\s*(.*?)\s*</h1>", html, re.IGNORECASE | re.DOTALL)
+        m = re.search(r"<h1[^>]*>\s*(.*?)\s*</h1>", html, re.I | re.S)
         if m:
             t = re.sub(r"<[^>]+>", "", m.group(1)).strip()
-            # Some mirrors duplicate the title inside the h1 tag.
             if len(t) > 4:
                 half = len(t) // 2
                 if t[:half] == t[half:]:
                     return t[:half].strip()
             return t
-        m = re.search(r"<title>([^<]+)</title>", html, re.IGNORECASE)
+        m = re.search(r"<title>([^<]+)</title>", html, re.I)
         if m:
             t = re.sub(r"\s*[|·].*$", "", m.group(1)).strip()
-            return re.sub(r"^Watch\s+", "", t, flags=re.IGNORECASE).strip()
+            return re.sub(r"^Watch\s+", "", t, flags=re.I).strip()
         return "Unknown Anime"
 
     def _parse_page(self, data: Dict) -> List[EpisodeInfo]:
-        eps: List[EpisodeInfo] = []
+        eps = []
         for item in data.get("data", []):
-            if not (ep_session := item.get("session", "")):
+            if not (ep_sess := item.get("session", "")):
                 continue
             eps.append(EpisodeInfo(
                 number   = float(item.get("episode", 0) or 0),
-                session  = ep_session,
-                title    = (item.get("title") or "").strip(),
+                session  = ep_sess,
+                title    = ("" if (item.get("title") or "").strip() == "?" else (item.get("title") or "").strip()),
                 fansub   = (item.get("fansub") or "").strip(),
-                audio    = (item.get("audio") or "jpn").strip().lower(),  # ← normalized
-                play_url = f"https://{self.host}/play/{self.session}/{ep_session}",
+                audio    = (item.get("audio") or "jpn").strip().lower(),
+                play_url = f"https://{self.host}/play/{self.session}/{ep_sess}",
             ))
         return eps
 
     def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
-        """
-        Fetch the full episode list and optionally deduplicate by episode
-        number, keeping the entry that matches `prefer_audio` ("jpn" or "eng").
-        If a preferred-language entry doesn't exist, the available one is kept.
-        """
         console.print("  [dim]Fetching episode list …[/dim]", end="\r")
         first = self._fetch_page(1)
         if not first:
             raise RuntimeError(
                 "Failed to fetch episode list.\n"
-                "  • Is FlareSolverr running?\n"
+                "  • Is FlareSolverr running?  Check: " + FLARESOLVERR_URL + "\n"
                 "  • Is the URL an /anime/ series page (not a /play/ episode link)?"
             )
 
         last_page = int(first.get("last_page", 1))
         total     = int(first.get("total", 0))
-        anime     = AnimeInfo(session=self.session, title=self._fetch_title(),
-                              host=self.host, total=total)
+        anime     = AnimeInfo(
+            session=self.session, title=self._fetch_title(),
+            host=self.host, total=total,
+        )
         anime.episodes.extend(self._parse_page(first))
 
         for page in range(2, last_page + 1):
@@ -1600,16 +1320,14 @@ class AnimePaheScanner:
             if data := self._fetch_page(page):
                 anime.episodes.extend(self._parse_page(data))
 
-        console.print(" " * 60, end="\r")   # clear the spinner line
+        console.print(" " * 60, end="\r")
 
-        # ── Deduplicate by episode number, honouring audio preference ─────
+        # Deduplicate by episode number, favouring preferred audio
         if prefer_audio:
             best: Dict[float, EpisodeInfo] = {}
             for ep in anime.episodes:
-                if ep.number not in best:
+                if ep.number not in best or ep.audio == prefer_audio:
                     best[ep.number] = ep
-                elif ep.audio == prefer_audio:
-                    best[ep.number] = ep  # override with preferred
             anime.episodes = sorted(best.values(), key=lambda e: e.number)
         else:
             anime.episodes.sort(key=lambda e: e.number)
@@ -1622,7 +1340,6 @@ class AnimePaheScanner:
 # ═════════════════════════════════════════════════════════════════════════
 
 def _parse_ep_range(raw: str, all_eps: List[EpisodeInfo]) -> List[float]:
-    """Parse a range string like '1-12', '1,4,7', '13-' into episode numbers."""
     numbers = sorted({ep.number for ep in all_eps})
     result: Set[float] = set()
     for token in re.split(r"[,\s]+", raw):
@@ -1640,54 +1357,28 @@ def _parse_ep_range(raw: str, all_eps: List[EpisodeInfo]) -> List[float]:
     return sorted(result)
 
 
-def _compact_ep_list(episodes: List[EpisodeInfo]) -> str:
-    """Summarise selected episodes as a human-readable range string."""
-    if not episodes:
-        return "none"
-    nums = sorted(ep.number for ep in episodes)
-    if len(nums) == 1:
-        n = nums[0]
-        return str(int(n) if n == int(n) else n)
-
-    ranges: List[Tuple[float, float]] = []
-    start = prev = nums[0]
-    for n in nums[1:]:
-        if n == prev + 1:
-            prev = n
-        else:
-            ranges.append((start, prev))
-            start = prev = n
-    ranges.append((start, prev))
-
-    parts: List[str] = []
-    for s, e in ranges:
-        si = int(s) if s == int(s) else s
-        ei = int(e) if e == int(e) else e
-        parts.append(str(si) if s == e else f"{si}–{ei}")
-    return ", ".join(parts)
-
-
 def _print_ep_table(episodes: List[EpisodeInfo], selected: Set[str]) -> None:
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan", padding=(0, 1))
-    t.add_column("",      width=2,  justify="center")
-    t.add_column("Ep",    width=6,  justify="right", style="dim")
+    t.add_column("",      width=2, justify="center")
+    t.add_column("Ep",    width=6, justify="right", style="dim")
     t.add_column("Title", style="white")
     t.add_column("Audio", width=5)
     for ep in episodes:
         check = "[green]✓[/green]" if ep.session in selected else " "
-        audio = _audio_display(ep.audio)
-        t.add_row(check, ep.ep_str, ep.title or "—", audio)
+        t.add_row(check, ep.ep_str, ep.title or "—", audio_badge(ep.audio))
     console.print(t)
 
 
 def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
-    """Interactive episode picker presented to the user."""
+    """Interactive episode picker."""
     console.print()
-    console.print(Rule(f"[bold white] Episode Selection — {anime.title} [/bold white]", style="cyan"))
-    
-    available = _compact_ep_list(anime.episodes)
+    console.print(Rule(f"[bold white] Episode Selection — {anime.title} [/bold white]",
+                       style="cyan"))
+
+    available = compact_ep_range(anime.episodes)
     console.print(
-        f"  [cyan]{len(anime.episodes)}[/cyan] episodes found: [bold cyan]{available}[/bold cyan]"
+        f"  [cyan]{len(anime.episodes)}[/cyan] episodes: "
+        f"[bold cyan]{available}[/bold cyan]"
         f"  [dim]({anime.total} total in series)[/dim]\n"
     )
     console.print(Panel(
@@ -1695,7 +1386,7 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
         "  [bold white]R[/bold white]  Range    [dim]e.g. 1-12  or  1,4,7  or  13-[/dim]\n"
         "  [bold white]L[/bold white]  Toggle   [dim]interactive checklist[/dim]\n"
         "  [bold white]N[/bold white]  Latest N [dim]most recently aired[/dim]\n"
-        "  [bold white]S[/bold white]  Skip     [dim]exit without downloading[/dim]",
+        "  [bold white]S[/bold white]  Skip",
         title="[cyan]Select mode[/cyan]", border_style="dim cyan",
         box=box.ROUNDED, padding=(0, 2),
     ))
@@ -1718,34 +1409,33 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
     if mode == "N":
         n      = IntPrompt.ask("  Latest [cyan]N[/cyan] episodes", default=1)
         chosen = anime.episodes[-max(1, min(n, len(anime.episodes))):]
-        console.print(f"  [green]✓[/green] Selected latest [cyan]{len(chosen)}[/cyan] episodes.")
+        console.print(f"  [green]✓[/green] Latest [cyan]{len(chosen)}[/cyan] selected.")
         return chosen
 
     if mode == "R":
         console.print(
-            "  Enter numbers or ranges — examples: "
-            "[dim]1-12[/dim]  [dim]1,4,7[/dim]  [dim]5-[/dim]  [dim]1-6,10[/dim]"
+            "  Enter numbers or ranges — e.g. [dim]1-12[/dim]  "
+            "[dim]1,4,7[/dim]  [dim]5-[/dim]  [dim]1-6,10[/dim]"
         )
         raw    = Prompt.ask("  [cyan]Episodes[/cyan]").strip()
         nums   = _parse_ep_range(raw, anime.episodes)
         chosen = [eps_by_num[n] for n in nums if n in eps_by_num]
         if not chosen:
-            console.print(f"  [yellow]⚠ No episodes matched range [bold]{raw}[/bold].[/yellow]")
-            console.print(f"    Available numbers: [cyan]{available}[/cyan]")
+            console.print(f"  [yellow]⚠ Nothing matched [bold]{raw}[/bold]. "
+                          f"Available: [cyan]{available}[/cyan][/yellow]")
         else:
-            console.print(f"  [green]✓[/green] Selected [cyan]{len(chosen)}[/cyan] episodes.")
+            console.print(f"  [green]✓[/green] [cyan]{len(chosen)}[/cyan] episodes selected.")
         return chosen
 
-    # mode == "L" — interactive toggle checklist
+    # mode == "L" — toggle checklist
     selected: Set[str] = set()
     while True:
         console.clear()
         console.print(Rule(f"[bold white] {anime.title} [/bold white]", style="cyan"))
         _print_ep_table(anime.episodes, selected)
         console.print(
-            "  [dim]Commands:[/dim] [white]a[/white]=select all  "
-            "[white]n[/white]=clear  [white]<num>[/white]=toggle  "
-            "[white]done[/white]=confirm"
+            "  [dim]a[/dim]=all  [dim]n[/dim]=none  "
+            "[dim]<num>[/dim]=toggle  [dim]done[/dim]=confirm"
         )
         cmd = Prompt.ask("  [cyan]>[/cyan]").strip().lower()
         if cmd in ("done", "d", ""):
@@ -1765,10 +1455,10 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
 
 
 def noninteractive_episodes(
-    anime:      AnimeInfo,
-    mode:       Literal["all", "range", "latest"],
-    range_str:  str = "",
-    latest_n:   int = 1,
+    anime:     AnimeInfo,
+    mode:      Literal["all", "range", "latest"],
+    range_str: str = "",
+    latest_n:  int = 1,
 ) -> List[EpisodeInfo]:
     eps_by_num = {ep.number: ep for ep in anime.episodes}
     if mode == "all":
@@ -1781,312 +1471,177 @@ def noninteractive_episodes(
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 15.  BATCH ORCHESTRATION
+# 15.  PRE-DOWNLOAD CONFIRMATION PANEL
 # ═════════════════════════════════════════════════════════════════════════
 
-def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
-    """Interactive download-settings wizard."""
-    console.print()
-    console.print(Rule("[bold white] Download Settings [/bold white]", style="cyan"))
+def _confirm_download(anime: AnimeInfo, episodes: List[EpisodeInfo], cfg: DownloadConfig) -> bool:
+    """Show a summary panel and ask for confirmation (skipped in non-interactive mode)."""
+    n          = len(episodes)
+    ep_range   = compact_ep_range(episodes)
+    # Rough size estimate: 360p ~50 MB, 720p ~90 MB, 1080p ~150 MB
+    est_mb_per = {360: 50, 720: 90, 1080: 150}.get(cfg.quality, 120)
+    est_total  = n * est_mb_per
 
-    # ── Action mode ───────────────────────────────────────────────────────
-    console.print(Panel(
-        "  [bold white]1[/bold white]  [cyan]Download Locally[/cyan]  "
-        "[dim]· Use internal HLS engine to save .mp4 files[/dim]\n"
-        "  [bold white]2[/bold white]  [cyan]Export Links[/cyan]      "
-        "[dim]· Get M3U8 URLs + Headers for external downloaders[/dim]\n"
-        "  [bold white]3[/bold white]  [cyan]Stream via MPV[/cyan]    "
-        "[dim]· Watch episodes now in high quality[/dim]",
-        title="[cyan]Action[/cyan]", border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
-    ))
-    if defaults.export_mode:
-        _default_action = "2"
-    elif defaults.stream_mode:
-        _default_action = "3"
+    sub_n = sum(1 for ep in episodes if ep.audio == "jpn")
+    dub_n = n - sub_n
+    audio_str = ""
+    if dub_n and sub_n:
+        audio_str = f"[cyan]{sub_n}[/cyan] JPN + [yellow]{dub_n}[/yellow] DUB"
+    elif dub_n:
+        audio_str = f"[yellow]{dub_n} DUB[/yellow]"
     else:
-        _default_action = "1"
-    action_key  = Prompt.ask("  [cyan]Select[/cyan]", choices=["1", "2", "3"], default=_default_action)
-    export_mode = action_key == "2"
-    stream_mode = action_key == "3"
-
-    # ── Quality ───────────────────────────────────────────────────────────
-    _q_default = {360: "1", 720: "2", 1080: "3"}.get(defaults.quality, "3")
-    console.print(Panel(
-        "  [bold white]1[/bold white]  [dim cyan]360p [/dim cyan]  [dim]~50 MB/ep   · mobile / slow connection[/dim]\n"
-        "  [bold white]2[/bold white]  [cyan]720p [/cyan]  [dim]~90 MB/ep   · recommended[/dim]\n"
-        "  [bold white]3[/bold white]  [bold cyan]1080p[/bold cyan]  [dim]~150 MB/ep  · best quality[/dim]",
-        title="[cyan]Quality[/cyan]", border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
-    ))
-    quality = {1: 360, 2: 720, 3: 1080}[int(Prompt.ask("  [cyan]Select[/cyan]",
-                                                          choices=["1", "2", "3"], default=_q_default))]
-
-    # ── Audio Language ────────────────────────────────────────────────────
-    _audio_default = "1" if defaults.audio_lang == "jpn" else "2"
-    console.print(Panel(
-        "  [bold white]1[/bold white]  [cyan]Subbed[/cyan]  [dim](Japanese original)[/dim]\n"
-        "  [bold white]2[/bold white]  [yellow]Dubbed[/yellow]  [dim](English)[/dim]",
-        title="[cyan]Audio Language[/cyan]", border_style="dim cyan",
-        box=box.ROUNDED, padding=(0, 2),
-    ))
-    audio_choice = Prompt.ask("  [cyan]Select[/cyan]", choices=["1", "2"], default=_audio_default)
-    audio_lang = "jpn" if audio_choice == "1" else "eng"
-
-    if stream_mode:
-        return DownloadConfig(quality=quality, stream_mode=True, audio_lang=audio_lang)
-
-    # ── Output directory ──────────────────────────────────────────────────
-    output_dir = Prompt.ask("  [cyan]Output directory[/cyan]", default=defaults.output_dir).strip()
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    if export_mode:
-        return DownloadConfig(output_dir=output_dir, quality=quality,
-                              export_mode=True, audio_lang=audio_lang)
-
-    # ── Concurrency ───────────────────────────────────────────────────────
-    console.print(Panel(
-        "  [bold white]1[/bold white]  [dim]Safe    — 1 download at a time[/dim]\n"
-        "  [bold white]2[/bold white]  [cyan]Default[/cyan] — 2 simultaneous  [dim](recommended)[/dim]\n"
-        "  [bold white]4[/bold white]  [dim]Fast    — 4 simultaneous  · higher CPU / RAM[/dim]\n"
-        "  [bold white]6[/bold white]  [dim]Max     — 6 simultaneous  · may get rate-limited[/dim]",
-        title="[cyan]Concurrent Downloads[/cyan]", border_style="dim cyan",
-        box=box.ROUNDED, padding=(0, 2),
-    ))
-    max_parallel = max(1, min(6, IntPrompt.ask("  [cyan]Select[/cyan]", default=defaults.max_parallel)))
-    hls_workers  = max(4, min(32, IntPrompt.ask(
-        "  [cyan]HLS segment workers per download[/cyan] [dim](4–32, default 16)[/dim]",
-        default=defaults.hls_workers,
-    )))
-    purge_db = Confirm.ask("  [cyan]Delete temp database after download?[/cyan]", default=defaults.purge_db)
-
-    cfg = DownloadConfig(
-        output_dir=output_dir, max_parallel=max_parallel, hls_workers=hls_workers,
-        purge_db=purge_db, quality=quality, audio_lang=audio_lang,
-    )
-
-    db_path = "pahe_vault.db" if not cfg.purge_db else f".pahe_staging_{os.getpid()}.db"
+        audio_str = f"[cyan]{sub_n} JPN[/cyan]"
 
     console.print()
     console.print(Panel(
-        f"  [dim]Output:[/dim]      {cfg.output_dir}\n"
-        f"  [dim]Quality:[/dim]     [cyan]{cfg.quality}p[/cyan]\n"
-        f"  [dim]Audio:[/dim]       [cyan]{'Subbed' if cfg.audio_lang == 'jpn' else 'Dubbed'}[/cyan]\n"
-        f"  [dim]Vault DB:[/dim]    [cyan]{db_path}[/cyan]\n"
-        f"  [dim]Parallel:[/dim]    [cyan]{cfg.max_parallel}[/cyan] downloads  ·  "
-        f"[cyan]{cfg.hls_workers}[/cyan] segment workers\n"
-        f"  [dim]Temp DB:[/dim]     {'purged after finish' if cfg.purge_db else 'kept'}",
-        title="[bold green]✓ Ready[/bold green]", border_style="green", box=box.ROUNDED,
+        f"  [dim]Series:[/dim]    [bold white]{anime.title}[/bold white]\n"
+        f"  [dim]Episodes:[/dim]  [cyan]{n}[/cyan]  ({ep_range})\n"
+        f"  [dim]Audio:[/dim]     {audio_str}\n"
+        f"  [dim]Quality:[/dim]   [cyan]{cfg.quality}p[/cyan]\n"
+        f"  [dim]Output:[/dim]    {cfg.output_dir}\n"
+        f"  [dim]Workers:[/dim]   [cyan]{cfg.max_parallel}[/cyan] episodes × "
+        f"[cyan]{cfg.hls_workers}[/cyan] segments each\n"
+        f"  [dim]Est. size:[/dim] [cyan]~{est_total} MB[/cyan]  "
+        f"[dim](~{est_mb_per} MB/ep × {n} eps)[/dim]",
+        title=f"[bold green]Ready to Download — {n} episode{'s' if n != 1 else ''}[/bold green]",
+        border_style="green", box=box.ROUNDED,
     ))
-    return cfg
+    return Confirm.ask("  [cyan]Start download?[/cyan]", default=True)
 
 
-async def _run_batch(episodes: List[EpisodeInfo], cfg: DownloadConfig, db: VaultDB) -> None:
-    mgr  = AssetManager(db)
-    dash = Dashboard()
-    dl   = Downloader(db, mgr, dash, cfg)
-    loop = asyncio.get_running_loop()
-    start_time = time.time()
+# ═════════════════════════════════════════════════════════════════════════
+# 16.  EXPORT MODE
+# ═════════════════════════════════════════════════════════════════════════
 
-    asset_ids: List[int] = []
-    for ep in episodes:
-        aid = await loop.run_in_executor(
-            None, mgr.add_asset, ep.play_url, ep.title or f"Episode {ep.ep_str}", ep.ep_str,
-        )
-        asset_ids.append(aid)
-
-    dash.start()
-    try:
-        await asyncio.gather(*(asyncio.create_task(dl.download_asset(aid)) for aid in asset_ids))
-        await asyncio.sleep(0.5)
-    finally:
-        dash.stop()
-
-    # ── Summary table ─────────────────────────────────────────────────────
-    duration = time.time() - start_time
-    minutes  = int(duration // 60)
-    seconds  = int(duration % 60)
-    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
-
-    console.print()
-    console.print(Rule("[bold green] All Done [/bold green]", style="green"))
-    ok = fail = 0
-    table = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="bold cyan", border_style="dim")
-    table.add_column("Ep",     style="cyan",       width=6,  justify="right")
-    table.add_column("Title",  style="bold white",  ratio=1)
-    table.add_column("Status", justify="center",    width=10)
-    table.add_column("Size",   justify="right",     width=10, style="cyan")
-    table.add_column("File",   style="dim",         ratio=1)
-
-    for ep, aid in zip(episodes, asset_ids):
-        asset  = await loop.run_in_executor(None, mgr.get_asset, aid)
-        status = asset["status"] if asset else "unknown"
-        title  = asset["title"]  if asset else (ep.title or "—")
-        badge  = "[bold green]✓  done[/bold green]" if status == "complete" else f"[red]✗ {status}[/red]"
-        size   = f"{(asset['total_bytes'] or 0) / 1_048_576:.1f} MB" if asset else "—"
-
-        ep_num = asset["ep_number"] if asset else ep.ep_str
-        prefix = _make_ep_prefix(ep_num) if ep_num else ""
-        full   = f"Ep {prefix} - {title}" if prefix else (title or "")
-        fname  = f"{_sanitize_filename(full)}.mp4" if full else "—"
-
-        table.add_row(ep.ep_str, (title or "—")[:38], badge, size, fname[:42])
-        if status == "complete":
-            ok += 1
-        else:
-            fail += 1
-
-    console.print(table)
-    status_line = f"[bold green]✓ {ok} succeeded[/bold green]"
-    if fail:
-        status_line += f"  [bold red]✗ {fail} failed[/bold red]"
-    console.print(Panel(
-        f"  {status_line}\n"
-        f"  [dim]Duration:[/dim]  [cyan]{time_str}[/cyan]\n"
-        f"  [dim]Saved to:[/dim]  {cfg.output_dir}",
-        border_style="green" if not fail else "yellow", box=box.ROUNDED,
-    ))
-
-
-async def _run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
-    """Resolve M3U8 links for all episodes and write them to a text file."""
+async def run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
+    """Resolve M3U8 links for all episodes and write to a text file."""
     console.print()
     console.print(Rule("[bold white] Exporting Links [/bold white]", style="cyan"))
-    start_time = time.time()
+    loop       = asyncio.get_event_loop()
+    results    = []
+    start_t    = time.time()
 
-    results: List[Dict[str, str]] = []
     with Progress(
         SpinnerColumn(),
-        TextColumn("[bold white]{task.description:<46}"),
+        TextColumn("[bold white]{task.description:<48}"),
         BarColumn(bar_width=None, style="cyan"),
         MofNCompleteColumn(),
         console=console, expand=True,
-    ) as progress:
-        task = progress.add_task("Resolving links …", total=len(episodes))
-        loop = asyncio.get_running_loop()
-
+    ) as prog:
+        task = prog.add_task("Resolving …", total=len(episodes))
         for ep in episodes:
-            progress.update(task, description=f"Resolving: {ep.label[:40]}")
+            prog.update(task, description=f"Resolving Ep {ep.ep_str}: {ep.title[:36] or '?'}")
             try:
-                info       = await loop.run_in_executor(
-                    None, extract_animepahe_stream, ep.play_url,
-                    cfg.quality, cfg.audio_lang,
+                info = await loop.run_in_executor(
+                    None, extract_stream, ep.play_url, cfg.quality, cfg.audio_lang,
                 )
-                cookie_str = format_cookies(info["cookies"])
-                ff_cmd     = (
-                    f'ffmpeg -headers "User-Agent: {info["user_agent"]}\\r\\n'
-                    f'Referer: {info["referer"]}\\r\\n'
-                    f'Cookie: {cookie_str}\\r\\n" '
-                    f'-i "{info["url"]}" -c copy "Ep_{ep.ep_str}.mp4"'
+                ff_cmd = (
+                    f'ffmpeg -headers "User-Agent: {info.user_agent}\\r\\n'
+                    f'Referer: {info.referer}\\r\\n'
+                    f'Cookie: {info.cookie_str}\\r\\n" '
+                    f'-i "{info.url}" -c copy "Ep_{ep.ep_str}.mp4"'
                 )
                 results.append({
                     "ep":     ep.ep_str,
                     "title":  ep.title or "—",
-                    "url":    info["url"],
-                    "ua":     info["user_agent"],
-                    "ref":    info["referer"],
-                    "cookie": cookie_str,
+                    "url":    info.url,
+                    "ua":     info.user_agent,
+                    "ref":    info.referer,
+                    "cookie": info.cookie_str,
                     "ffmpeg": ff_cmd,
                 })
             except Exception as exc:
-                console.print(f"  [red]✗ Failed to resolve Ep {ep.ep_str}:[/red] {exc}")
-            progress.advance(task)
+                console.print(f"  [red]✗ Ep {ep.ep_str}:[/red] {exc}")
+            prog.advance(task)
 
     if not results:
-        console.print("\n  [red]No links were successfully resolved.[/red]")
+        console.print("\n  [red]No links resolved.[/red]")
         return
 
-    duration = time.time() - start_time
-    minutes  = int(duration // 60)
-    seconds  = int(duration % 60)
-    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+    elapsed  = time.time() - start_t
+    m, s     = divmod(int(elapsed), 60)
+    time_str = f"{m}m {s}s" if m else f"{s}s"
 
-    out_file = Path(cfg.output_dir) / "links_export.txt"
-    try:
-        with open(out_file, "w", encoding="utf-8") as f:
-            f.write("=" * 80 + "\n")
-            f.write(" PAHE-BATCHER LINK EXPORT\n")
-            f.write(f" Generated: {time.ctime()}\n")
-            f.write("=" * 80 + "\n\n")
-            for item in results:
-                f.write(f"EPISODE {item['ep']}: {item['title']}\n")
-                f.write(f"  M3U8 URL:       {item['url']}\n")
-                f.write(f"  User-Agent:     {item['ua']}\n")
-                f.write(f"  Referer:        {item['ref']}\n")
-                f.write(f"  Cookie:         {item['cookie']}\n")
-                f.write(f"  FFmpeg Command:\n    {item['ffmpeg']}\n")
-                f.write("-" * 40 + "\n\n")
-        console.print()
-        console.print(Panel(
-            f"  [green]✓ Successfully exported [bold]{len(results)}[/bold] links.[/green]\n"
-            f"  [dim]Duration:[/dim]  [cyan]{time_str}[/cyan]\n"
-            f"  [dim]Saved to:[/dim]  [cyan]{out_file}[/cyan]",
-            border_style="green", box=box.ROUNDED,
-        ))
-    except OSError as exc:
-        console.print(f"  [red]✗ Failed to write export file:[/red] {exc}")
+    out_dir  = Path(cfg.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "links_export.txt"
+
+    with open(out_file, "w", encoding="utf-8") as f:
+        f.write("=" * 80 + "\n PAHE-BATCHER LINK EXPORT\n")
+        f.write(f" Generated: {time.ctime()}\n" + "=" * 80 + "\n\n")
+        for item in results:
+            f.write(f"EPISODE {item['ep']}: {item['title']}\n")
+            f.write(f"  M3U8:     {item['url']}\n")
+            f.write(f"  UA:       {item['ua']}\n")
+            f.write(f"  Referer:  {item['ref']}\n")
+            f.write(f"  Cookie:   {item['cookie']}\n")
+            f.write(f"  FFmpeg:\n    {item['ffmpeg']}\n")
+            f.write("-" * 40 + "\n\n")
+
+    console.print(Panel(
+        f"  [green]✓ Exported [bold]{len(results)}[/bold] links.[/green]\n"
+        f"  [dim]Time:[/dim]  [cyan]{time_str}[/cyan]\n"
+        f"  [dim]File:[/dim]  [cyan]{out_file}[/cyan]",
+        border_style="green", box=box.ROUNDED,
+    ))
 
 
-async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
-    """Resolve links and play them sequentially with MPV + interactive controls."""
+# ═════════════════════════════════════════════════════════════════════════
+# 17.  STREAM MODE  (MPV playback)
+# ═════════════════════════════════════════════════════════════════════════
+
+async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
     if not shutil.which("mpv"):
         console.print("\n  [red]✗ MPV not found![/red]")
-        console.print("  [dim]Please install MPV (https://mpv.io) and ensure it is in your PATH.[/dim]")
+        console.print("  [dim]Install MPV from https://mpv.io and ensure it is in your PATH.[/dim]")
         return
 
     console.print()
     console.print(Rule("[bold white] Streaming via MPV [/bold white]", style="cyan"))
 
-    loop = asyncio.get_running_loop()
+    loop = asyncio.get_event_loop()
     idx  = 0
     while 0 <= idx < len(episodes):
         ep = episodes[idx]
         try:
             with Progress(
                 SpinnerColumn(),
-                TextColumn(f"[bold white]({idx + 1}/{len(episodes)}) Resolving: Ep {ep.ep_str}"),
+                TextColumn(f"[bold white]({idx + 1}/{len(episodes)}) Resolving Ep {ep.ep_str}…"),
                 console=console, transient=True,
-            ) as progress:
-                progress.add_task("resolve", total=None)
+            ) as prog:
+                prog.add_task("", total=None)
                 info = await loop.run_in_executor(
-                    None, extract_animepahe_stream, ep.play_url,
-                    cfg.quality, cfg.audio_lang,
+                    None, extract_stream, ep.play_url, cfg.quality, cfg.audio_lang,
                 )
 
-                # Update metadata if better info comes from the stream page.
-                if info.get("audio"):
-                    ep.audio = info["audio"]
-                if info.get("fansub"):
-                    ep.fansub = info["fansub"]
+            # Update episode metadata from stream page
+            if info.audio:  ep.audio  = info.audio
+            if info.fansub: ep.fansub = info.fansub
+            if info.title and (not ep.title or "animepahe" in ep.title.lower()):
+                t = re.sub(r"\s*[|·].*$", "", info.title).strip()
+                t = re.sub(r"^Watch\s+.*?Episode\s+\d+.*", "", t, flags=re.I).strip()
+                if ep.audio == "jpn":
+                    t = re.sub(r"\s+DUB\s*$", "", t, flags=re.I).strip()
+                if t:
+                    ep.title = t
 
-                if info.get("title") and (not ep.title or ep.title == "—" or "animepahe" in ep.title.lower()):
-                    new_title = re.sub(r"\s*[|·].*$", "", info["title"]).strip()
-                    new_title = re.sub(
-                        r"^Watch\s+.*?\s+Episode\s+\d+\s+Online.*", "", new_title, flags=re.I,
-                    ).strip()
-                    # If we are playing SUB but the title says DUB, strip it.
-                    if ep.audio == "jpn":
-                        new_title = re.sub(r"\s+DUB\s*$", "", new_title, flags=re.I).strip()
-
-                    if new_title:
-                        ep.title = new_title
-
-            cookie_str = format_cookies(info["cookies"])
             cmd = [
                 "mpv",
-                f"--user-agent={info['user_agent']}",
-                f"--referrer={info['referer']}",
-                f"--http-header-fields=Cookie: {cookie_str}",
+                f"--user-agent={info.user_agent}",
+                f"--referrer={info.referer}",
+                f"--http-header-fields=Cookie: {info.cookie_str}",
                 "--demuxer-lavf-format=hls",
-                f"--demuxer-lavf-o=cookies={cookie_str},referer={info['referer']}",
+                f"--demuxer-lavf-o=cookies={info.cookie_str},referer={info.referer}",
                 f"--force-media-title={ep.title or f'Episode {ep.ep_str}'}",
                 "--msg-level=all=warn,lavf=error,ffmpeg=error",
-                info["url"],
+                info.url,
             ]
 
             play_panel = Panel(
                 Align.center(Group(
                     Text(anime_title, style="bold cyan underline"),
                     Text.from_markup(f"Now Playing: {ep.label}", style="bold green"),
-                    Text(f"Quality: {cfg.quality}p  ·  Item {idx + 1}/{len(episodes)}", style="dim"),
+                    Text(f"Quality: {cfg.quality}p  ·  {idx + 1}/{len(episodes)}", style="dim"),
                     Rule(style="dim", characters="─"),
                     Text("Close MPV window to return to controls", style="italic cyan"),
                 )),
@@ -2102,14 +1657,13 @@ async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downlo
                 )
                 _, stderr = await proc.communicate()
                 if proc.returncode != 0 and stderr:
-                    err_msg = stderr.decode().strip()
-                    if "failed" in err_msg.lower() or "error" in err_msg.lower():
+                    err = stderr.decode().strip()
+                    if "failed" in err.lower() or "error" in err.lower():
                         live.stop()
-                        console.print(f"  [red]✗ MPV Error:[/red] {err_msg[:200]}")
+                        console.print(f"  [red]✗ MPV error:[/red] {err[:200]}")
 
-            # ── Playback menu ─────────────────────────────────────────────
+            # Playback controls
             console.print()
-            menu_table = Table.grid(padding=(0, 2))
             options: List[str] = []
             if idx < len(episodes) - 1:
                 options.append("[bold green][N][/bold green] Next")
@@ -2117,44 +1671,35 @@ async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downlo
                 options.append("[bold cyan][P][/bold cyan] Previous")
             options += [
                 "[bold yellow][R][/bold yellow] Replay",
-                "[bold magenta][S][/bold magenta] Select Ep",
+                "[bold magenta][S][/bold magenta] Select",
                 "[bold red][Q][/bold red] Quit",
             ]
-            menu_table.add_row(*options)
-            console.print(Panel(menu_table, title="[dim]Playback Controls[/dim]",
-                                border_style="dim", expand=False))
+            console.print(Panel(
+                Columns(options, padding=(0, 3)),
+                title="[dim]Playback Controls[/dim]",
+                border_style="dim", expand=False,
+            ))
 
-            _default_choice = "n" if idx < len(episodes) - 1 else "q"
-            choice = Prompt.ask(
-                "  [cyan]Action[/cyan]",
-                choices=["n", "p", "r", "s", "q"],
-                default=_default_choice,
-            ).lower()
+            default = "n" if idx < len(episodes) - 1 else "q"
+            choice  = Prompt.ask("  [cyan]Action[/cyan]",
+                                 choices=["n", "p", "r", "s", "q"], default=default).lower()
 
-            if choice == "n":
-                idx += 1
-            elif choice == "p":
-                idx -= 1
-            elif choice == "r":
-                continue
+            if choice == "n":   idx += 1
+            elif choice == "p": idx -= 1
+            elif choice == "r": continue
+            elif choice == "q": break
             elif choice == "s":
-                sel_table = Table(box=box.SIMPLE, header_style="bold cyan",
-                                  title="[bold white]Episode List[/bold white]")
-                sel_table.add_column("#",     justify="right", style="dim")
-                sel_table.add_column("Ep",    justify="right")
-                sel_table.add_column("Title")
+                sel = Table(box=box.SIMPLE, header_style="bold cyan",
+                            title="[bold white]Episode List[/bold white]")
+                sel.add_column("#",     justify="right", style="dim")
+                sel.add_column("Ep",   justify="right")
+                sel.add_column("Title")
                 for i, e in enumerate(episodes):
                     style = "bold green" if i == idx else ""
-                    sel_table.add_row(str(i + 1), e.ep_str, e.title or "—", style=style)
-                console.print(sel_table)
-                num = IntPrompt.ask(
-                    "  [cyan]Jump to item #[/cyan]",
-                    choices=[i + 1 for i in range(len(episodes))],
-                    default=idx + 1,
-                )
-                idx = num - 1
-            elif choice == "q":
-                break
+                    sel.add_row(str(i + 1), e.ep_str, e.title or "—", style=style)
+                console.print(sel)
+                num = IntPrompt.ask("  [cyan]Jump to #[/cyan]", default=idx + 1)
+                idx = max(0, min(num - 1, len(episodes) - 1))
 
         except KeyboardInterrupt:
             break
@@ -2167,15 +1712,75 @@ async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downlo
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 16.  BANNER + ENTRY POINT
+# 18.  INTERACTIVE WIZARD
+# ═════════════════════════════════════════════════════════════════════════
+
+def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
+    console.print()
+    console.print(Rule("[bold white] Download Settings [/bold white]", style="cyan"))
+
+    # Quality
+    _q_default = {360: "1", 720: "2", 1080: "3"}.get(defaults.quality, "3")
+    console.print(Panel(
+        "  [bold white]1[/bold white]  [dim cyan]360p [/dim cyan]  [dim]~50 MB/ep[/dim]\n"
+        "  [bold white]2[/bold white]  [cyan]720p [/cyan]  [dim]~90 MB/ep   · recommended[/dim]\n"
+        "  [bold white]3[/bold white]  [bold cyan]1080p[/bold cyan]  [dim]~150 MB/ep  · best quality[/dim]",
+        title="[cyan]Quality[/cyan]", border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
+    ))
+    quality = {1: 360, 2: 720, 3: 1080}[int(
+        Prompt.ask("  [cyan]Select[/cyan]", choices=["1", "2", "3"], default=_q_default)
+    )]
+
+    # Audio
+    _audio_default = "1" if defaults.audio_lang == "jpn" else "2"
+    console.print(Panel(
+        "  [bold white]1[/bold white]  [cyan]Subbed[/cyan]  [dim](Japanese audio)[/dim]\n"
+        "  [bold white]2[/bold white]  [yellow]Dubbed[/yellow]  [dim](English audio)[/dim]",
+        title="[cyan]Audio Language[/cyan]", border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
+    ))
+    audio_lang = "jpn" if Prompt.ask(
+        "  [cyan]Select[/cyan]", choices=["1", "2"], default=_audio_default
+    ) == "1" else "eng"
+
+    # Output directory
+    output_dir = Prompt.ask(
+        "  [cyan]Output directory[/cyan]", default=defaults.output_dir
+    ).strip()
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Concurrency
+    console.print(Panel(
+        "  [bold white]1[/bold white]  [dim]1 download   · safest[/dim]\n"
+        "  [bold white]2[/bold white]  [cyan]2 simultaneous  · recommended[/cyan]\n"
+        "  [bold white]4[/bold white]  [dim]4 simultaneous  · faster, more RAM[/dim]\n"
+        "  [bold white]6[/bold white]  [dim]6 simultaneous  · may trigger rate-limits[/dim]",
+        title="[cyan]Concurrent Downloads[/cyan]", border_style="dim cyan",
+        box=box.ROUNDED, padding=(0, 2),
+    ))
+    max_parallel = max(1, min(6, IntPrompt.ask(
+        "  [cyan]Select[/cyan]", default=defaults.max_parallel
+    )))
+    hls_workers = max(8, min(32, IntPrompt.ask(
+        "  [cyan]HLS workers per episode[/cyan] [dim](8–32, default 24)[/dim]",
+        default=defaults.hls_workers,
+    )))
+
+    return DownloadConfig(
+        output_dir=output_dir, max_parallel=max_parallel,
+        hls_workers=hls_workers, quality=quality, audio_lang=audio_lang,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 19.  BANNER
 # ═════════════════════════════════════════════════════════════════════════
 
 _BANNER = r"""
  ____        _            ____        _       _
- |  _ \ __ _| |__   ___  | __ )  __ _| |_ ___| |__   ___ _ __
- | |_) / _` | '_ \ / _ \ |  _ \ / _` | __/ __| '_ \ / _ \ '__|
- |  __/ (_| | | | |  __/ | |_) | (_| | || (__| | | |  __/ |
- |_|   \__,_|_| |_|\___| |____/ \__,_|\__\___|_| |_|\___|_|
+|  _ \ __ _| |__   ___  | __ )  __ _| |_ ___| |__   ___ _ __
+| |_) / _` | '_ \ / _ \ |  _ \ / _` | __/ __| '_ \ / _ \ '__|
+|  __/ (_| | | | |  __/ | |_) | (_| | || (__| | | |  __/ |
+|_|   \__,_|_| |_|\___| |____/ \__,_|\__\___|_| |_|\___|_|
 """
 
 
@@ -2189,21 +1794,46 @@ def _print_banner() -> None:
     ))
 
 
-async def _main_async(args: argparse.Namespace) -> None:
+# ═════════════════════════════════════════════════════════════════════════
+# 20.  MAIN ASYNC ENTRY POINT
+# ═════════════════════════════════════════════════════════════════════════
+
+async def _main(args: argparse.Namespace) -> None:
     _print_banner()
 
-    # ── Resolve URL ───────────────────────────────────────────────────────
+    # ── Parse + validate URL ──────────────────────────────────────────────
     try:
-        host, session = _pahe_parse_url(args.url)
+        host, session = parse_anime_url(args.url)
     except ValueError as exc:
         console.print(f"\n  [red]✗ Invalid URL:[/red] {exc}")
         sys.exit(1)
 
+    # ── FlareSolverr health check ─────────────────────────────────────────
+    console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="cyan"))
+    console.print(f"  [dim]FlareSolverr:[/dim] {FLARESOLVERR_URL}  ", end="")
+    if Solver.ping():
+        console.print("[green]✓ reachable[/green]")
+    else:
+        console.print("[red]✗ not responding[/red]")
+        console.print(
+            "\n  [red bold]FlareSolverr is not running![/red bold]\n"
+            "  [dim]Start it with Docker:[/dim]\n"
+            "    docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr\n"
+            f"  [dim]Or set FLARESOLVERR_URL env var if it's on a different host.[/dim]"
+        )
+        sys.exit(1)
+
+    if not HAS_AIOHTTP:
+        console.print(
+            "  [yellow]⚠ aiohttp not installed — using urllib (slower)[/yellow]\n"
+            "  [dim]Install for 3–5× faster downloads:  pip install aiohttp[/dim]"
+        )
+
     # ── Scan series ───────────────────────────────────────────────────────
-    console.print(Rule("[bold white] Step 1/3 — Scanning Series [/bold white]", style="cyan"))
-    console.print(f"  [dim]FlareSolverr:[/dim] {FLARESOLVERR_URL}")
-    console.print(f"  [dim]Host:[/dim]         {host}")
-    console.print(f"  [dim]Session:[/dim]      {session}\n")
+    console.print()
+    console.print(Rule("[bold white] Scanning Series [/bold white]", style="cyan"))
+    console.print(f"  [dim]Host:[/dim]     {host}")
+    console.print(f"  [dim]Session:[/dim]  {session}\n")
 
     try:
         anime = AnimePaheScanner(host, session).scan(prefer_audio=args.audio_lang)
@@ -2211,92 +1841,76 @@ async def _main_async(args: argparse.Namespace) -> None:
         console.print(f"\n  [red]✗ Scan failed:[/red] {exc}")
         sys.exit(1)
 
-    # Show audio breakdown and range
-    sub_count = sum(1 for ep in anime.episodes if ep.audio == "jpn")
-    dub_count = len(anime.episodes) - sub_count
-    audio_info = f"{sub_count} JPN, {dub_count} DUB" if dub_count else "JPN audio"
-    available_range = _compact_ep_list(anime.episodes)
+    sub_n = sum(1 for ep in anime.episodes if ep.audio == "jpn")
+    dub_n = len(anime.episodes) - sub_n
+    audio_info = (
+        f"{sub_n} JPN, {dub_n} DUB" if dub_n else "JPN audio"
+    )
     console.print(
         f"  [green]✓[/green] [bold]{anime.title}[/bold]\n"
-        f"  — [cyan]{len(anime.episodes)}[/cyan] episodes found: [bold cyan]{available_range}[/bold cyan]  [dim]({audio_info})[/dim]\n"
+        f"  — [cyan]{len(anime.episodes)}[/cyan] episodes  "
+        f"({compact_ep_range(anime.episodes)})  "
+        f"[dim]{audio_info}[/dim]\n"
     )
 
-    # ── List-only mode ────────────────────────────────────────────────────
     if args.list_only:
-        table = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
-        table.add_column("Ep",    width=6,  justify="right")
-        table.add_column("Title", style="white")
-        table.add_column("Audio", width=5)
+        t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
+        t.add_column("Ep",    width=6, justify="right")
+        t.add_column("Title", style="white")
+        t.add_column("Audio", width=5)
         for ep in anime.episodes:
-            audio = _audio_display(ep.audio)
-            table.add_row(ep.ep_str, ep.title or "—", audio)
-        console.print(table)
+            t.add_row(ep.ep_str, ep.title or "—", audio_badge(ep.audio))
+        console.print(t)
         return
 
-    # ── Startup Cleanup ───────────────────────────────────────────────────
-    # Remove any orphaned staging DBs from crashed/interrupted previous runs.
-    # Only delete files older than 1 hour to avoid colliding with other instances.
-    now = time.time()
-    for p in Path(".").glob(".pahe_staging_*.db*"):
-        try:
-            if now - p.stat().st_mtime > 3600:
-                os.remove(p)
-        except OSError:
-            pass
+    # ── Determine mode: interactive vs scripted ───────────────────────────
+    _scripted = bool(args.all or args.range or args.latest or args.export or args.stream)
+    _cached_cfg: Optional[DownloadConfig] = None
 
-    # ── Interactive Session Loop ──────────────────────────────────────────
-    _noninteractive = args.yes or args.all or args.range or args.latest or args.export or args.stream
-    cached_cfg: Optional[DownloadConfig] = None
-    last_action: Optional[str] = None
-    
     while True:
-        # ... (rest of the loop) ...
-        # (I will keep the loop logic as is but fix the DB handling)
-        if _noninteractive:
-            mode_choice = "2" if args.export else ("3" if args.stream else "1")
+        # ── Action selection ──────────────────────────────────────────────
+        if _scripted:
+            mode = "export" if args.export else "stream" if args.stream else "download"
         else:
             console.print()
-            console.print(Rule("[bold white] Step 2/3 — Action Selection [/bold white]", style="cyan"))
+            console.print(Rule("[bold white] Action [/bold white]", style="cyan"))
             console.print(Panel(
-                "  [bold white]1[/bold white]  [cyan]Download Locally[/cyan]  [dim]· Save .mp4 files via internal engine[/dim]\n"
-                "  [bold white]2[/bold white]  [cyan]Export Links[/cyan]      [dim]· Get M3U8 URLs + Headers[/dim]\n"
-                "  [bold white]3[/bold white]  [cyan]Stream via MPV[/cyan]    [dim]· Watch episodes now[/dim]\n"
-                "  [bold white]4[/bold white]  [cyan]List Episodes[/cyan]     [dim]· Show the full episode table[/dim]\n"
+                "  [bold white]1[/bold white]  [cyan]Download[/cyan]  [dim]· save .mp4 files[/dim]\n"
+                "  [bold white]2[/bold white]  [cyan]Export[/cyan]    [dim]· get M3U8 URLs + headers[/dim]\n"
+                "  [bold white]3[/bold white]  [cyan]Stream[/cyan]    [dim]· play in MPV[/dim]\n"
+                "  [bold white]4[/bold white]  [cyan]List[/cyan]      [dim]· show episode table[/dim]\n"
                 "  [bold white]5[/bold white]  [red]Exit[/red]",
-                title=f"[bold cyan]Action Selection — {anime.title}[/bold cyan]",
+                title=f"[bold cyan]{anime.title}[/bold cyan]",
                 border_style="cyan", box=box.ROUNDED, padding=(0, 2),
             ))
-            
-            # Default to Exit (5) if we just did a batch action, else Download (1)
-            _default = "5" if last_action in ("1", "2") else "1"
-            mode_choice = Prompt.ask("  [cyan]Select action[/cyan]", choices=["1", "2", "3", "4", "5"], default=_default)
+            _default = "5" if _cached_cfg else "1"
+            choice = Prompt.ask(
+                "  [cyan]Select[/cyan]",
+                choices=["1", "2", "3", "4", "5"],
+                default=_default,
+            )
+            if choice == "5":
+                break
+            if choice == "4":
+                t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
+                t.add_column("Ep",    width=6, justify="right")
+                t.add_column("Title", style="white")
+                t.add_column("Audio", width=5)
+                for ep in anime.episodes:
+                    t.add_row(ep.ep_str, ep.title or "—", audio_badge(ep.audio))
+                console.print(t)
+                continue
+            mode = {"1": "download", "2": "export", "3": "stream"}[choice]
 
-        if mode_choice == "5":
-            break
-
-        if mode_choice == "4":
-            table = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
-            table.add_column("Ep",    width=6,  justify="right")
-            table.add_column("Title", style="white")
-            table.add_column("Audio", width=5)
-            for ep in anime.episodes:
-                audio = _audio_display(ep.audio)
-                table.add_row(ep.ep_str, ep.title or "—", audio)
-            console.print(table)
-            continue
-
-        # ── Episode selection ─────────────────────────────────────────────────
-        if not _noninteractive:
-            console.print(Rule("[bold white] Step 3/3 — Select Episodes [/bold white]", style="cyan"))
-
+        # ── Episode selection ─────────────────────────────────────────────
         if args.all:
             chosen = noninteractive_episodes(anime, "all")
         elif args.range:
             chosen = noninteractive_episodes(anime, "range", range_str=args.range)
             if not chosen:
-                console.print(f"  [red]✗ No episodes matched range:[/red] {args.range}")
-                console.print(f"    Available numbers: [cyan]{available_range}[/cyan]")
-                if _noninteractive: sys.exit(1)
+                console.print(f"  [red]✗ No episodes matched:[/red] {args.range}")
+                console.print(f"    Available: [cyan]{compact_ep_range(anime.episodes)}[/cyan]")
+                if _scripted: sys.exit(1)
                 continue
         elif args.latest:
             chosen = noninteractive_episodes(anime, "latest", latest_n=args.latest)
@@ -2304,92 +1918,85 @@ async def _main_async(args: argparse.Namespace) -> None:
             chosen = select_episodes(anime)
 
         if not chosen:
-            if _noninteractive: break
+            if _scripted:
+                break
             continue
 
-        # ── Configuration ─────────────────────────────────────────────────────
-        if _noninteractive:
-            safe_title = _sanitize_filename(anime.title)
-            series_dir = os.path.join(args.output, safe_title)
+        # ── Build config ──────────────────────────────────────────────────
+        safe_title = sanitize(anime.title)
+        series_dir = os.path.join(args.output, safe_title)
+
+        if _scripted:
             cfg = DownloadConfig(
-                output_dir   = series_dir,
-                max_parallel = args.parallel,
-                hls_workers  = args.workers,
-                purge_db     = args.purge_db,
-                quality      = args.quality,
-                export_mode  = (mode_choice == "2"),
-                stream_mode  = (mode_choice == "3"),
-                audio_lang   = args.audio_lang,
+                output_dir=series_dir, max_parallel=args.parallel,
+                hls_workers=args.workers, quality=args.quality,
+                export_mode=(mode == "export"), stream_mode=(mode == "stream"),
+                audio_lang=args.audio_lang,
+            )
+        elif mode == "stream":
+            cfg = DownloadConfig(
+                quality=args.quality, stream_mode=True, audio_lang=args.audio_lang,
+                output_dir=series_dir,
             )
         else:
-            # Re-confirm or use cached settings
-            if cached_cfg and (
-                (mode_choice == "1" and not cached_cfg.export_mode and not cached_cfg.stream_mode) or
-                (mode_choice == "2" and cached_cfg.export_mode) or
-                (mode_choice == "3" and cached_cfg.stream_mode)
+            # Reuse previous settings if same mode
+            if _cached_cfg and (
+                (mode == "download" and not _cached_cfg.export_mode and not _cached_cfg.stream_mode) or
+                (mode == "export" and _cached_cfg.export_mode)
             ):
-                cfg = cached_cfg
-                console.print(f"  [dim]Reusing settings:[/dim] [cyan]{cfg.quality}p[/cyan] · "
-                              f"[cyan]{'Sub' if cfg.audio_lang == 'jpn' else 'Dub'}[/cyan] · "
-                              f"[cyan]{cfg.output_dir}[/cyan]")
-            else:
-                safe_title = _sanitize_filename(anime.title)
-                series_dir = os.path.join(args.output, safe_title)
-                defaults = DownloadConfig(
-                    output_dir   = series_dir,
-                    max_parallel = args.parallel,
-                    hls_workers  = args.workers,
-                    purge_db     = args.purge_db,
-                    quality      = args.quality,
-                    export_mode  = (mode_choice == "2"),
-                    stream_mode  = (mode_choice == "3"),
-                    audio_lang   = args.audio_lang,
+                cfg = _cached_cfg
+                console.print(
+                    f"  [dim]Reusing settings:[/dim] "
+                    f"[cyan]{cfg.quality}p[/cyan] · "
+                    f"[cyan]{'Sub' if cfg.audio_lang == 'jpn' else 'Dub'}[/cyan] · "
+                    f"[cyan]{cfg.output_dir}[/cyan]"
                 )
-                if mode_choice == "3":
-                    cfg = DownloadConfig(quality=defaults.quality, stream_mode=True, audio_lang=defaults.audio_lang)
-                else:
-                    cfg = _wizard_config(defaults)
-                
-                if not cfg: continue
-                cached_cfg = cfg
+            else:
+                cfg = _wizard_config(DownloadConfig(
+                    output_dir=series_dir, max_parallel=args.parallel,
+                    hls_workers=args.workers, quality=args.quality,
+                    audio_lang=args.audio_lang,
+                ))
+                _cached_cfg = cfg
 
-        # ── Execution ─────────────────────────────────────────────────────────
-        last_action = mode_choice
-        if cfg.export_mode:
-            await _run_export(chosen, cfg)
-            break  # Exit after export
-        elif cfg.stream_mode:
-            await _run_stream(anime.title, chosen, cfg)
-        else:
-            # Make the .db visible for transparency
-            db_path = "pahe_vault.db" if not cfg.purge_db else f".pahe_staging_{os.getpid()}.db"
-            if _noninteractive:
-                console.print(f"  [dim]Vault DB:[/dim]      [cyan]{db_path}[/cyan]")
-            
-            db = VaultDB(db_path)
-            try:
-                await _run_batch(chosen, cfg, db)
-            finally:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, db.close)
-                if cfg.purge_db and os.path.exists(db_path):
-                    try:
-                        os.remove(db_path)
-                        for suffix in ("-wal", "-shm"):
-                            with contextlib.suppress(OSError):
-                                if os.path.exists(db_path + suffix):
-                                    os.remove(db_path + suffix)
-                        console.print("  [dim]Temp database cleaned up.[/dim]")
-                    except OSError as exc:
-                        console.print(f"  [yellow]⚠ Could not remove database:[/yellow] {exc}")
-            break  # Exit after download
-
-        if _noninteractive:
+        # ── Execute ───────────────────────────────────────────────────────
+        if mode == "export":
+            await run_export(chosen, cfg)
             break
 
-    # Final cleanup before exit
+        elif mode == "stream":
+            await run_stream(anime.title, chosen, cfg)
+            if _scripted:
+                break
+
+        else:  # download
+            # Confirmation summary (skipped in scripted mode)
+            if not _scripted:
+                if not _confirm_download(anime, chosen, cfg):
+                    continue
+
+            dl = BatchDownloader(anime, cfg)
+            await dl.run(chosen)
+            break
+
+        if _scripted:
+            break
+
+    # ── Cleanup orphaned cache dirs from old crashed runs ─────────────────
+    with contextlib.suppress(Exception):
+        now = time.time()
+        for p in CACHE_DIR.glob("*/*/*.ts"):
+            if now - p.stat().st_mtime > 86400:   # older than 1 day
+                with contextlib.suppress(Exception):
+                    shutil.rmtree(p.parent.parent)
+
+    console.print("\n  [bold cyan]Session finished.[/bold cyan]")
     Solver.destroy_session()
 
+
+# ═════════════════════════════════════════════════════════════════════════
+# 21.  CLI
+# ═════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -2398,59 +2005,57 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  %(prog)s https://animepahe.ru/anime/<uuid>                       # wizard\n"
-            "  %(prog)s https://animepahe.ru/anime/<uuid> --all                 # download all\n"
-            "  %(prog)s https://animepahe.ru/anime/<uuid> --range 1-12          # season 1\n"
-            "  %(prog)s https://animepahe.ru/anime/<uuid> --latest 3            # last 3 eps\n"
-            "  %(prog)s https://animepahe.ru/anime/<uuid> --list                # list only\n"
-            "  %(prog)s https://animepahe.ru/anime/<uuid> --audio eng --all     # dubbed all\n"
-            "  %(prog)s https://animepahe.ru/anime/<uuid> --all -o ~/anime -j 3 # full flags\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid>                        # wizard\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid> --all                  # all episodes\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid> --range 1-12           # season 1\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid> --latest 3             # last 3\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid> --list                 # list only\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid> --audio eng --all      # dubbed\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid> --all -o ~/anime -j 3  # full flags\n"
         ),
     )
 
     parser.add_argument("url", metavar="URL",
-                        help="AnimePahe series page URL  (https://animepahe.ru/anime/<uuid>)")
+                        help="AnimePahe series URL (https://animepahe.ru/anime/<uuid>)")
 
     sel = parser.add_mutually_exclusive_group()
     sel.add_argument("--all",    "-a", action="store_true",
-                     help="Download every episode (no prompts)")
+                     help="Download every episode")
     sel.add_argument("--range",  "-r", metavar="RANGE",
-                     help='Episode range, e.g. "1-12" or "1,4,7" or "13-"')
+                     help='Episode range, e.g. "1-12" "1,4,7" "13-"')
     sel.add_argument("--latest", "-n", metavar="N", type=int,
                      help="Download the latest N episodes")
 
-    parser.add_argument("--list",    "-l", action="store_true", dest="list_only",
-                        help="List episodes only — do not download")
-    parser.add_argument("--export",  "-e", action="store_true",
-                        help="Export M3U8 links and headers to a file instead of downloading")
-    parser.add_argument("--stream",  "-s", action="store_true",
-                        help="Stream episodes directly via MPV")
+    parser.add_argument("--list",   "-l", action="store_true", dest="list_only",
+                        help="List episodes and exit (no download)")
+    parser.add_argument("--export", "-e", action="store_true",
+                        help="Export M3U8 links to a file")
+    parser.add_argument("--stream", "-s", action="store_true",
+                        help="Stream episodes via MPV")
 
-    parser.add_argument("-o", "--output",    default="./downloads",
+    parser.add_argument("-o", "--output",   default="./downloads",
                         help="Output directory (default: ./downloads)")
-    parser.add_argument("-q", "--quality",   metavar="Q", type=int,
+    parser.add_argument("-q", "--quality",  metavar="Q", type=int,
                         choices=[360, 720, 1080], default=1080,
-                        help="Preferred quality: 360, 720, or 1080 (default: 1080)")
-    parser.add_argument("--audio",           metavar="LANG", type=str,
+                        help="Quality: 360, 720, or 1080 (default: 1080)")
+    parser.add_argument("--audio",          metavar="LANG", type=str,
                         choices=["jpn", "eng"], default="jpn", dest="audio_lang",
-                        help="Preferred audio: jpn = subbed (default), eng = dubbed")
-    parser.add_argument("-j", "--parallel",  metavar="N", type=int, default=2,
-                        help="Max concurrent downloads (default: 2, max: 6)")
-    parser.add_argument("-w", "--workers",   metavar="N", type=int, default=HLS_WORKERS,
-                        help=f"HLS segment workers per download (default: {HLS_WORKERS}, max: 32)")
-    parser.add_argument("--keep-db",         action="store_false", dest="purge_db",
-                        help="Keep the SQLite database after download (default: deleted)")
-    parser.add_argument("-y", "--yes",       action="store_true",
-                        help="Skip all confirmation prompts")
+                        help="Audio preference: jpn=subbed (default), eng=dubbed")
+    parser.add_argument("-j", "--parallel", metavar="N", type=int, default=2,
+                        help="Concurrent episode downloads (default: 2, max: 6)")
+    parser.add_argument("-w", "--workers",  metavar="N", type=int, default=HLS_WORKERS,
+                        help=f"HLS segment workers per episode (default: {HLS_WORKERS}, max: 32)")
+    parser.add_argument("--keep-temp",      action="store_true",
+                        help="Keep raw segment files after download (for debugging)")
 
     args = parser.parse_args()
     args.parallel = max(1, min(6, args.parallel))
-    args.workers  = max(4, min(32, args.workers))
+    args.workers  = max(8, min(32, args.workers))
 
     try:
-        asyncio.run(_main_async(args))
+        asyncio.run(_main(args))
     except KeyboardInterrupt:
-        console.print("\n  [yellow]Interrupted — cleaning up …[/yellow]")
+        console.print("\n  [yellow]Interrupted.[/yellow]")
         Solver.destroy_session()
         sys.exit(0)
 
