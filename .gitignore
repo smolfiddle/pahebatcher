@@ -26,3 +26,6 @@ pb_*.ts
 # IDEs
 .vscode/
 .idea/
+
+# Pahe-Batcher Cache
+pahe_cache/

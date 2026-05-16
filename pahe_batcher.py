@@ -107,11 +107,13 @@ except ImportError:
     sys.exit(1)
 
 # ── aiohttp ───────────────────────────────────────────────────────────────
+_AIOHTTP_ERR: Optional[str] = None
 try:
     import aiohttp
     HAS_AIOHTTP = True
-except ImportError:
+except Exception as _exc:
     HAS_AIOHTTP = False
+    _AIOHTTP_ERR = str(_exc)
 
 console = Console()
 
@@ -125,7 +127,21 @@ RETRY_ATTEMPTS   = 5
 RETRY_BASE_DELAY = 0.5
 FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 REQUEST_DELAY    = 0.4         # between API page fetches
-CACHE_DIR        = Path(tempfile.gettempdir()) / "pahe_batcher_v2"
+CACHE_DIR        = Path("pahe_cache")
+
+def _ensure_gitignore() -> None:
+    """Ensure pahe_cache/ is in .gitignore."""
+    git_ignore = Path(".gitignore")
+    entry = "pahe_cache/"
+    if git_ignore.exists():
+        content = git_ignore.read_text(encoding="utf-8")
+        if entry not in content:
+            with open(git_ignore, "a", encoding="utf-8") as f:
+                f.write(f"\n# Pahe-Batcher Cache\n{entry}\n")
+    else:
+        git_ignore.write_text(f"# Pahe-Batcher Cache\n{entry}\n", encoding="utf-8")
+
+_ensure_gitignore()
 
 # Rough bytes-per-segment hint before real sizes land (188 bytes × 512 packets)
 _SEG_HINT_BYTES = 188 * 512
@@ -165,6 +181,7 @@ class AnimeInfo:
     host:     str
     total:    int = 0
     episodes: List[EpisodeInfo] = field(default_factory=list)
+    has_session: bool = False
 
 
 @dataclass
@@ -275,24 +292,22 @@ def make_ssl_ctx() -> ssl.SSLContext:
 
 class SegmentStore:
     """
-    Stores HLS segments as individual numbered files in a temp directory.
-
-    v2.0 design rationale vs. the old SQLite chunk store
-    ─────────────────────────────────────────────────────
-    Old path per segment: blake2b hash → entropy sample → maybe zlib → BEGIN TX
-                          → INSERT chunks → INSERT asset_chunks → COMMIT
-    New path per segment: open(path, "wb").write(data)   ← one syscall
-
-    TS segments are already compressed media; the entropy check always
-    returned "high entropy" and skipped compression anyway.  The blake2b
-    hash and DB round-trip were pure overhead.
-
-    Resume works by checking which numbered .ts files already exist.
+    Stores HLS segments as individual numbered files in a persistent cache directory.
+    Structure: pahe_cache/[Sanitized_Anime_Title]_[Anime_UUID]/Ep_[Number]/
     """
 
-    def __init__(self, anime_session: str, ep_session: str) -> None:
-        self.dir = CACHE_DIR / anime_session / ep_session
+    def __init__(self, anime_title: str, anime_session: str, ep_num: str) -> None:
+        safe_title = sanitize(anime_title)
+        self.root  = CACHE_DIR / f"{safe_title}_{anime_session}"
+        self.dir   = self.root / f"Ep_{ep_num}"
         self.dir.mkdir(parents=True, exist_ok=True)
+
+    def save_metadata(self, anime_title: str, url: str) -> None:
+        """Save session metadata for the Library view."""
+        meta = self.root / "session.json"
+        if not meta.exists():
+            with open(meta, "w", encoding="utf-8") as f:
+                json.dump({"title": anime_title, "url": url, "updated": time.time()}, f, indent=2)
 
     # ── Segment I/O ───────────────────────────────────────────────────────
 
@@ -796,8 +811,9 @@ def parse_m3u8(content: str, base_url: str) -> List[Dict[str, Any]]:
 
 class Dashboard:
     """
-    Clean single-row-per-episode progress.
-    No nested progress bars -- segment status is shown as a compact counter.
+    Clean standardized progress.
+    Unified metric: Segments (M of N) drives the bar and ETA.
+    Accurate metric: Bytes track the real file size.
     """
 
     def __init__(self, total_eps: int) -> None:
@@ -810,19 +826,41 @@ class Dashboard:
             SpinnerColumn(style="cyan", finished_text=" "),
             TextColumn("[bold white]{task.description:<32}"),
             BarColumn(bar_width=16, style="cyan", complete_style="bold green"),
-            TextColumn("[bold green]{task.percentage:>5.1f}%"),
-            TextColumn("[dim cyan]{task.fields[seg_text]:>12}[/dim cyan]"),
-            DownloadColumn(),
+            MofNCompleteColumn(),
+            TextColumn("[bold green]{task.percentage:>4.0f}%"),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
+            TextColumn("[dim cyan]{task.fields[size]:>10}[/dim cyan]"),
             console=console,
             expand=False,
         )
 
     def start(self) -> None:
+        # coordinated header table for perfect column alignment
+        header = Table.grid(padding=(0, 1))
+        header.add_column(width=3)  # spinner
+        header.add_column(width=32) # title
+        header.add_column(width=16) # bar
+        header.add_column(width=10, justify="center") # segments
+        header.add_column(width=5,  justify="center") # %
+        header.add_column(width=11, justify="center") # speed
+        header.add_column(width=10, justify="center") # eta
+        header.add_column(width=10, justify="right")  # size
+        
+        header.add_row(
+            "", "[bold white]Episode Title[/bold white]", "[bold white]Progress[/bold white]",
+            "[bold white]Segments[/bold white]", "[bold white]%[/bold white]",
+            "[bold white]Speed[/bold white]", "[bold white]ETA[/bold white]", "[bold white]Size[/bold white]"
+        )
+
+        console.clear()
         self._live = Live(
             Panel(
-                self._progress,
+                Group(
+                    header,
+                    Rule(style="dim"),
+                    self._progress,
+                ),
                 title=f"[bold cyan]pahe-batcher[/bold cyan]  [dim]v{VERSION}  -  {self._total_eps} episodes[/dim]",
                 border_style="cyan",
                 box=box.ROUNDED,
@@ -836,70 +874,90 @@ class Dashboard:
     def stop(self) -> None:
         if self._live:
             self._live.stop()
+        time.sleep(0.1) # tiny cooldown for terminal buffer
 
     # -- Task lifecycle ---------------------------------------------------
 
-    def add_ep(self, key: str, label: str, total_bytes: int = 0) -> None:
+    def add_ep(self, key: str, label: str, total_segments: int = 0) -> None:
         if key not in self._tasks:
-            kwargs: Dict[str, Any] = {"seg_text": "", "seg_total": 0, "seg_done": 0}
-            if total_bytes:
-                kwargs["total"] = total_bytes
+            kwargs: Dict[str, Any] = {"size": "0 B", "bytes_done": 0}
+            if total_segments:
+                kwargs["total"] = total_segments
             self._tasks[key] = self._progress.add_task(label[:32], **kwargs)
-        elif (tid := self._tasks.get(key)):
+        else:
+            tid = self._tasks[key]
             self._progress.update(tid, description=label[:32])
-            if total_bytes and not self._progress.tasks[tid].total:
-                self._progress.update(tid, total=total_bytes)
+            if total_segments and self._progress.tasks[tid].total is None:
+                self._progress.update(tid, total=total_segments)
 
-    def set_total(self, key: str, n: int) -> None:
-        if tid := self._tasks.get(key):
-            self._progress.update(tid, total=n)
+    def set_total(self, key: str, n_segments: int) -> None:
+        """Set the total number of segments (this drives the progress bar)."""
+        if (tid := self._tasks.get(key)) is not None:
+            self._progress.update(tid, total=n_segments)
 
     def set_segment_total(self, key: str, total: int) -> None:
-        if tid := self._tasks.get(key):
-            self._progress.update(tid, seg_total=total, seg_done=0, seg_text=f"0/{total}")
+        """Alias for compatibility; sets the primary segment total."""
+        self.set_total(key, total)
 
     def seg_done(self, key: str, nbytes: int) -> None:
-        if tid := self._tasks.get(key):
+        """One segment finished. Advance count by 1 and accumulate real bytes."""
+        if (tid := self._tasks.get(key)) is not None:
             task = self._progress.tasks[tid]
-            done = (task.fields.get("seg_done", 0) or 0) + 1
-            total = task.fields.get("seg_total", 0) or 0
-            seg_text = f"{done}/{total}" if total else ""
-            self._progress.update(tid, advance=nbytes, seg_done=done, seg_text=seg_text)
+            new_bytes = (task.fields.get("bytes_done", 0)) + nbytes
+            self._progress.update(
+                tid,
+                advance=1,
+                bytes_done=new_bytes,
+                size=fmt_bytes(new_bytes)
+            )
 
     # -- State transitions ------------------------------------------------
 
     def mark_resolving(self, key: str, label: str) -> None:
-        if tid := self._tasks.get(key):
-            self._progress.update(tid, description=f"[dim cyan]⟳ {label[:30]}[/dim cyan]", seg_text="resolving")
+        if (tid := self._tasks.get(key)) is not None:
+            self._progress.update(tid, description=f"[cyan]⟳ {label[:30]}[/cyan]", size="resolving")
+
+    def mark_waiting(self, key: str, label: str) -> None:
+        if (tid := self._tasks.get(key)) is not None:
+            self._progress.update(tid, description=f"[dim]⋯ {label[:30]}[/dim]", size="waiting")
+
+    def mark_queued(self, key: str, label: str) -> None:
+        if (tid := self._tasks.get(key)) is not None:
+            self._progress.update(tid, description=f"[dim cyan]⌛ {label[:30]}[/dim cyan]", size="queued")
 
     def mark_downloading(self, key: str, label: str) -> None:
-        if tid := self._tasks.get(key):
-            self._progress.update(tid, description=f"[white]{label[:32]}[/white]")
+        if (tid := self._tasks.get(key)) is not None:
+            self._progress.update(tid, description=f"[bold white]{label[:32]}[/bold white]")
 
     def mark_remuxing(self, key: str, label: str) -> None:
-        if tid := self._tasks.get(key):
-            self._progress.update(tid, description=f"[yellow]⟳ Remuxing {label[:30]}[/yellow]", seg_text="mux")
+        if (tid := self._tasks.get(key)) is not None:
+            self._progress.update(tid, description=f"[yellow]⟳ Remuxing {label[:30]}[/yellow]", size="muxing")
+            # Stop the task to freeze speed/ETA artifacts
+            self._progress.stop_task(tid)
 
     def mark_done(self, key: str, label: str) -> None:
         self._done_eps += 1
-        if tid := self._tasks.get(key):
+        if (tid := self._tasks.get(key)) is not None:
             t = self._progress.tasks[tid]
             total = t.total or t.completed or 1
+            # Keep the last known size instead of setting it to "done"
+            final_size = t.fields.get("size", "done")
             self._progress.update(
                 tid,
                 description=f"[bold green]✓ {label[:32]}[/bold green]",
                 completed=total,
                 total=total,
-                seg_text="done",
+                size=final_size,
             )
+            # Stop the task so speed/ETA columns zero out or hide
             self._progress.stop_task(tid)
 
     def mark_fail(self, key: str, reason: str) -> None:
-        if tid := self._tasks.get(key):
+        if (tid := self._tasks.get(key)) is not None:
             self._progress.update(
                 tid,
                 description=f"[red]✗ {reason[:32]}[/red]",
-                seg_text="fail",
+                size="fail",
             )
             self._progress.stop_task(tid)
 
@@ -979,24 +1037,29 @@ class EpisodeDownloader:
 
     def __init__(
         self,
+        anime_title: str,
         anime_session: str,
+        anime_url: str,
         cfg: DownloadConfig,
         dash: Dashboard,
         session: Optional["aiohttp.ClientSession"],
     ) -> None:
+        self.anime_title   = anime_title
         self.anime_session = anime_session
+        self.anime_url     = anime_url
         self.cfg     = cfg
         self.dash    = dash
         self.session = session
 
     async def run(self, ep: EpisodeInfo, info: StreamInfo) -> Optional[Path]:
         key   = ep.session
-        def _safe(t: str) -> str:
-            return t if t and t != "?" else ""
-        title = _safe(ep.title) or _safe(info.title) or f"Episode {ep.ep_str}"
+        title = ep.title or info.title or f"Episode {ep.ep_str}"
         label = f"Ep {ep.ep_str} — {title}"
-        store = SegmentStore(self.anime_session, ep.session)
+        store = SegmentStore(self.anime_title, self.anime_session, ep.ep_str)
         loop  = asyncio.get_event_loop()
+
+        # Save metadata for library view
+        await loop.run_in_executor(None, store.save_metadata, self.anime_title, self.anime_url)
 
         # Build output path
         outdir = Path(self.cfg.output_dir)
@@ -1025,12 +1088,11 @@ class EpisodeDownloader:
             done_set = await loop.run_in_executor(None, store.done_indices)
             pending  = [(i, s) for i, s in enumerate(segments) if i not in done_set]
 
-            self.dash.set_total(key, n * _SEG_HINT_BYTES)
-            self.dash.set_segment_total(key, n)
+            self.dash.set_total(key, n)
             self.dash.mark_downloading(key, label)
             # Advance progress bar for already-downloaded segments
             for _ in done_set:
-                self.dash.seg_done(key, _SEG_HINT_BYTES)
+                self.dash.seg_done(key, 0)
 
             # Prefetch AES keys (usually 0 or 1 unique key)
             key_map: Dict[str, bytes] = {}
@@ -1108,10 +1170,31 @@ class BatchDownloader:
     └──────────────────────────────────────────────────────────────┘
     """
 
-    def __init__(self, anime: AnimeInfo, cfg: DownloadConfig) -> None:
-        self.anime   = anime
-        self.cfg     = cfg
+    def __init__(self, anime: AnimeInfo, anime_url: str, cfg: DownloadConfig) -> None:
+        self.anime     = anime
+        self.anime_url = anime_url
+        self.cfg       = cfg
         self._results: Dict[str, Optional[Path]] = {}
+
+    def _count_cached(self, ep: EpisodeInfo) -> int:
+        """Count how many segments already exist in the cache for this episode."""
+        store = SegmentStore(self.anime.title, self.anime.session, ep.ep_str)
+        return len(store.done_indices())
+
+    def _find_existing(self, ep: EpisodeInfo) -> Optional[Path]:
+        """Check if this episode already exists in the output directory."""
+        outdir = Path(self.cfg.output_dir)
+        if not outdir.exists():
+            return None
+        prefix = ep_prefix(ep.ep_str)
+        # Search for files starting with Ep <prefix> or Ep_<prefix>
+        for p in outdir.iterdir():
+            if not p.is_file() or p.suffix not in (".mp4", ".ts"):
+                continue
+            if p.name.startswith(f"Ep {prefix}") or p.name.startswith(f"Ep_{prefix}"):
+                if p.stat().st_size > 0:
+                    return p
+        return None
 
     async def run(self, episodes: List[EpisodeInfo]) -> Dict[str, Optional[Path]]:
         loop  = asyncio.get_event_loop()
@@ -1123,54 +1206,112 @@ class BatchDownloader:
             make_aio_session(self.cfg.hls_workers) if HAS_AIOHTTP else None
         )
 
-        queue: "asyncio.Queue[Optional[Tuple[EpisodeInfo, StreamInfo]]]" = asyncio.Queue(
-            maxsize=self.cfg.max_parallel + 2  # small look-ahead buffer
+        # Pre-populate dashboard
+        for ep in episodes:
+            label = f"Ep {ep.ep_str} — {ep.title or 'Pending...'}"
+            dash.add_ep(ep.session, label)
+            dash.mark_waiting(ep.session, label)
+
+        # Queues
+        # resolve_queue: Episodes needing stream info
+        # download_queue: (EpisodeInfo, StreamInfo) ready for download
+        resolve_queue: "asyncio.Queue[EpisodeInfo]" = asyncio.Queue()
+        for ep in episodes:
+            await resolve_queue.put(ep)
+
+        download_queue: "asyncio.Queue[Optional[Tuple[EpisodeInfo, StreamInfo]]]" = asyncio.Queue(
+            maxsize=self.cfg.max_parallel + 2
         )
 
-        # ── Stage 1: resolver ─────────────────────────────────────────────
+        # ── Stage 1: Resolver worker ──────────────────────────────────────
 
         async def resolver() -> None:
-            for ep in episodes:
-                # Show the episode in the dashboard immediately (resolving state)
-                placeholder = ep.title or "⏳ Resolving title…"
-                label = f"Ep {ep.ep_str} — {placeholder}"
-                dash.add_ep(ep.session, label)
+            while not resolve_queue.empty():
+                ep = await resolve_queue.get()
+
+                # 1. Failover: check if already downloaded
+                existing = await loop.run_in_executor(None, self._find_existing, ep)
+                if existing:
+                    self._results[ep.session] = existing
+                    # Title extraction
+                    title = ep.title
+                    if not title or title == "?":
+                        with contextlib.suppress(Exception):
+                            t = existing.stem
+                            for sep in (" - ", "_-_"):
+                                if sep in t:
+                                    t = t.split(sep, 1)[-1]
+                                    break
+                            title = t.replace("_", " ").strip()
+
+                    dash.add_ep(ep.session, f"Ep {ep.ep_str} — {title or 'Already exists'}")
+                    dash.mark_done(ep.session, f"Ep {ep.ep_str} (already exists)")
+                    resolve_queue.task_done()
+                    continue
+
+                # 2. Extract stream
+                label = f"Ep {ep.ep_str} — {ep.title or 'Resolving...'}"
                 dash.mark_resolving(ep.session, label)
+
                 try:
-                    info = await loop.run_in_executor(
-                        None, extract_stream, ep.play_url,
-                        self.cfg.quality, self.cfg.audio_lang,
+                    # ADDED TIMEOUT: 120 seconds for resolution
+                    info = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, extract_stream, ep.play_url,
+                            self.cfg.quality, self.cfg.audio_lang,
+                        ),
+                        timeout=120.0
                     )
-                    await queue.put((ep, info))
+                    if info.title and (not ep.title or ep.title == "?"):
+                        ep.title = info.title
+
+                    real_label = f"Ep {ep.ep_str} — {ep.title or f'Episode {ep.ep_str}'}"
+                    dash.add_ep(ep.session, real_label)
+                    dash.mark_queued(ep.session, real_label)
+                    await download_queue.put((ep, info))
+                except asyncio.TimeoutError:
+                    log.error("Resolution timed out for Ep %s", ep.ep_str)
+                    dash.mark_fail(ep.session, f"Ep {ep.ep_str}: Resolution Timeout")
+                    self._results[ep.session] = None
                 except Exception as exc:
+                    log.error("Failed to resolve Ep %s: %s", ep.ep_str, exc)
                     dash.mark_fail(ep.session, f"Ep {ep.ep_str}: {exc!s:.35}")
                     self._results[ep.session] = None
-            # Sentinels — one per download worker
-            for _ in range(self.cfg.max_parallel):
-                await queue.put(None)
 
-        # ── Stage 2: download workers ─────────────────────────────────────
+                resolve_queue.task_done()
+
+            # Sentinels for download workers
+            for _ in range(self.cfg.max_parallel):
+                await download_queue.put(None)
+        # ── Stage 2: Download workers ─────────────────────────────────────
 
         async def download_worker() -> None:
-            ep_dl = EpisodeDownloader(self.anime.session, self.cfg, dash, session)
+            ep_dl = EpisodeDownloader(
+                self.anime.title, self.anime.session, self.anime_url,
+                self.cfg, dash, session
+            )
             while True:
-                item = await queue.get()
+                item = await download_queue.get()
                 if item is None:
+                    download_queue.task_done()
                     return
                 ep, info = item
                 path = await ep_dl.run(ep, info)
                 self._results[ep.session] = path
+                download_queue.task_done()
 
         # ── Run pipeline ──────────────────────────────────────────────────
 
         dash.start()
         try:
-            workers = [
+            # We use 1 resolver worker (FlareSolverr is serial) but multiple downloaders
+            tasks = [asyncio.create_task(resolver())]
+            tasks.extend(
                 asyncio.create_task(download_worker())
                 for _ in range(self.cfg.max_parallel)
-            ]
-            await asyncio.gather(asyncio.create_task(resolver()), *workers)
-            await asyncio.sleep(0.4)  # let final render flush
+            )
+            await asyncio.gather(*tasks)
+            await asyncio.sleep(0.4)
         finally:
             dash.stop()
             if session:
@@ -1194,19 +1335,19 @@ class BatchDownloader:
             header_style="bold cyan", border_style="dim",
         )
         table.add_column("Ep",     style="cyan",        width=6,  justify="right")
-        table.add_column("Title",  style="bold white",  ratio=1)
+        table.add_column("Title",  style="bold white",  ratio=1,  overflow="ellipsis")
         table.add_column("Audio",  width=5)
         table.add_column("Status", justify="center",    width=10)
         table.add_column("Size",   justify="right",     width=10, style="cyan")
-        table.add_column("File",   style="dim",         ratio=1)
+        table.add_column("File",   style="dim",         ratio=1,  overflow="ellipsis")
 
         for ep in episodes:
             path   = self._results.get(ep.session)
             badge  = "[bold green]✓  done[/bold green]" if path else "[red]✗ failed[/red]"
             size   = fmt_bytes(path.stat().st_size) if path and path.exists() else "—"
-            fname  = path.name[:40] if path else "—"
+            fname  = path.name if path else "—"
             table.add_row(
-                ep.ep_str, (ep.title or "—")[:36],
+                ep.ep_str, (ep.title or "—"),
                 audio_badge(ep.audio), badge, size, fname,
             )
 
@@ -1312,10 +1453,17 @@ class AnimePaheScanner:
 
         last_page = int(first.get("last_page", 1))
         total     = int(first.get("total", 0))
+        title     = self._fetch_title()
         anime     = AnimeInfo(
-            session=self.session, title=self._fetch_title(),
+            session=self.session, title=title,
             host=self.host, total=total,
         )
+
+        # Detect existing session
+        safe_title = sanitize(title)
+        session_path = CACHE_DIR / f"{safe_title}_{self.session}"
+        anime.has_session = session_path.exists()
+
         anime.episodes.extend(self._parse_page(first))
 
         for page in range(2, last_page + 1):
@@ -1482,6 +1630,14 @@ def _confirm_download(anime: AnimeInfo, episodes: List[EpisodeInfo], cfg: Downlo
     """Show a summary panel and ask for confirmation (skipped in non-interactive mode)."""
     n          = len(episodes)
     ep_range   = compact_ep_range(episodes)
+
+    # Calculate reused segments
+    reused_count = 0
+    if anime.has_session:
+        for ep in episodes:
+            store = SegmentStore(anime.title, anime.session, ep.ep_str)
+            reused_count += len(store.done_indices())
+
     # Rough size estimate: 360p ~50 MB, 720p ~90 MB, 1080p ~150 MB
     est_mb_per = {360: 50, 720: 90, 1080: 150}.get(cfg.quality, 120)
     est_total  = n * est_mb_per
@@ -1496,17 +1652,21 @@ def _confirm_download(anime: AnimeInfo, episodes: List[EpisodeInfo], cfg: Downlo
     else:
         audio_str = f"[cyan]{sub_n} JPN[/cyan]"
 
+    stats = [
+        f"  [dim]Series:[/dim]    [bold white]{anime.title}[/bold white]",
+        f"  [dim]Episodes:[/dim]  [cyan]{n}[/cyan]  ({ep_range})",
+        f"  [dim]Audio:[/dim]     {audio_str}",
+        f"  [dim]Quality:[/dim]   [cyan]{cfg.quality}p[/cyan]",
+        f"  [dim]Output:[/dim]    {cfg.output_dir}",
+    ]
+    if reused_count > 0:
+        stats.append(f"  [dim]Reusing:[/dim]   [bold green]{reused_count}[/bold green] segments from previous session")
+
+    stats.append(f"  [dim]Est. size:[/dim] [cyan]~{est_total} MB[/cyan]  [dim](~{est_mb_per} MB/ep × {n} eps)[/dim]")
+
     console.print()
     console.print(Panel(
-        f"  [dim]Series:[/dim]    [bold white]{anime.title}[/bold white]\n"
-        f"  [dim]Episodes:[/dim]  [cyan]{n}[/cyan]  ({ep_range})\n"
-        f"  [dim]Audio:[/dim]     {audio_str}\n"
-        f"  [dim]Quality:[/dim]   [cyan]{cfg.quality}p[/cyan]\n"
-        f"  [dim]Output:[/dim]    {cfg.output_dir}\n"
-        f"  [dim]Workers:[/dim]   [cyan]{cfg.max_parallel}[/cyan] episodes × "
-        f"[cyan]{cfg.hls_workers}[/cyan] segments each\n"
-        f"  [dim]Est. size:[/dim] [cyan]~{est_total} MB[/cyan]  "
-        f"[dim](~{est_mb_per} MB/ep × {n} eps)[/dim]",
+        "\n".join(stats),
         title=f"[bold green]Ready to Download — {n} episode{'s' if n != 1 else ''}[/bold green]",
         border_style="green", box=box.ROUNDED,
     ))
@@ -1716,7 +1876,137 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 18.  INTERACTIVE WIZARD
+# 18.  SESSION MANAGER
+# ═════════════════════════════════════════════════════════════════════════
+
+class SessionManager:
+    """Manages the pahe_cache library and legacy artifacts."""
+
+    @staticmethod
+    def get_sessions() -> List[Dict[str, Any]]:
+        sessions = []
+        if not CACHE_DIR.exists():
+            return sessions
+
+        for folder in CACHE_DIR.iterdir():
+            if not folder.is_dir():
+                continue
+            meta_file = folder / "session.json"
+            if not meta_file.exists():
+                continue
+
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+
+                # Count episodes and segments
+                eps = [d for d in folder.iterdir() if d.is_dir() and d.name.startswith("Ep_")]
+                segs = sum(len(list(d.glob("*.ts"))) for d in eps)
+                size = sum(f.stat().st_size for f in folder.rglob("*"))
+
+                sessions.append({
+                    "path": folder,
+                    "title": meta.get("title", folder.name),
+                    "url": meta.get("url", ""),
+                    "ep_count": len(eps),
+                    "seg_count": segs,
+                    "size": size,
+                    "updated": meta.get("updated", folder.stat().st_mtime)
+                })
+            except Exception:
+                continue
+        return sorted(sessions, key=lambda x: x["updated"], reverse=True)
+
+    @staticmethod
+    def get_legacy_files() -> List[Path]:
+        return list(Path(".").glob(".pahe_staging_*.db*")) + list(Path(".").glob("pahe_batcher.db*"))
+
+    @classmethod
+    def run(cls) -> Optional[str]:
+        """Main loop for session manager. Returns a URL if 'Resume' is selected."""
+        while True:
+            console.clear()
+            console.print(Rule("[bold white] Session & Cache Manager [/bold white]", style="cyan"))
+
+            sessions = cls.get_sessions()
+            legacy   = cls.get_legacy_files()
+            total_size = sum(s["size"] for s in sessions) + sum(f.stat().st_size for f in legacy)
+
+            if not sessions and not legacy:
+                console.print("\n  [dim]No active sessions or cache found.[/dim]")
+                Prompt.ask("\n  [cyan]Press Enter to return to menu[/cyan]")
+                return None
+
+            table = Table(box=box.ROUNDED, header_style="bold cyan", border_style="dim")
+            table.add_column("#", justify="right", style="dim")
+            table.add_column("Anime Title", ratio=1)
+            table.add_column("Eps", justify="center")
+            table.add_column("Segments", justify="center")
+            table.add_column("Size", justify="right", style="green")
+            table.add_column("Status", justify="center")
+
+            for i, s in enumerate(sessions, 1):
+                table.add_row(
+                    str(i), s["title"], str(s["ep_count"]),
+                    str(s["seg_count"]), fmt_bytes(s["size"]), "[yellow]Paused[/yellow]"
+                )
+
+            if legacy:
+                table.add_row(
+                    "L", "[red]Legacy Artifacts (.db files)[/red]", "-", "-",
+                    fmt_bytes(sum(f.stat().st_size for f in legacy)), "[red]Obsolete[/red]"
+                )
+
+            console.print(table)
+            console.print(f"  [dim]Total Cache Size:[/dim] [bold cyan]{fmt_bytes(total_size)}[/bold cyan]\n")
+
+            choices = ["B", "b"]
+            prompt_parts = []
+            if sessions:
+                choices += ["R", "r", "D", "d", "C", "c"]
+                prompt_parts.append("[cyan][R]esume[/cyan]  [cyan][D]elete[/cyan]  [cyan][C]lear All[/cyan]")
+            if legacy:
+                choices += ["L", "l"]
+                prompt_parts.append("[red][L]egacy Cleanup[/red]")
+
+            prompt_parts.append("[white][B]ack[/white]")
+            full_prompt = "  " + "  ".join(prompt_parts) + " > "
+
+            choice = Prompt.ask(full_prompt, choices=choices, default="B").upper()
+
+            if choice == "B":
+                return None
+
+            if choice == "C":
+                if Confirm.ask("  [red]Wipe entire cache folder?[/red]", default=False):
+                    shutil.rmtree(CACHE_DIR, ignore_errors=True)
+                    console.print("  [green]✓ Cache cleared.[/green]")
+                    time.sleep(0.5)
+                continue
+
+            if choice == "L":
+                if Confirm.ask(f"  [red]Delete {len(legacy)} legacy .db files?[/red]", default=True):
+                    for f in legacy:
+                        with contextlib.suppress(Exception): f.unlink()
+                    console.print("  [green]✓ Legacy files cleaned.[/green]")
+                    time.sleep(0.5)
+                continue
+
+            if choice in ("R", "D"):
+                idx = IntPrompt.ask(f"  Select # to { 'Resume' if choice == 'R' else 'Delete' }", default=1)
+                if 1 <= idx <= len(sessions):
+                    target = sessions[idx-1]
+                    if choice == "R":
+                        return target["url"]
+                    else:
+                        if Confirm.ask(f"  [red]Delete session for '{target['title']}'?[/red]", default=True):
+                            shutil.rmtree(target["path"], ignore_errors=True)
+                            console.print(f"  [green]✓ Deleted '{target['title']}'.[/green]")
+                            time.sleep(0.5)
+                continue
+
+# ═════════════════════════════════════════════════════════════════════════
+# 19.  INTERACTIVE WIZARD
 # ═════════════════════════════════════════════════════════════════════════
 
 def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
@@ -1780,7 +2070,7 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
 # ═════════════════════════════════════════════════════════════════════════
 
 _BANNER = r"""
- ____        _            ____        _       _
+ ____       _            ____        _       _
 |  _ \ __ _| |__   ___  | __ )  __ _| |_ ___| |__   ___ _ __
 | |_) / _` | '_ \ / _ \ |  _ \ / _` | __/ __| '_ \ / _ \ '__|
 |  __/ (_| | | | |  __/ | |_) | (_| | || (__| | | |  __/ |
@@ -1828,17 +2118,13 @@ async def _main(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     if not HAS_AIOHTTP:
+        err_hint = f" ({_AIOHTTP_ERR})" if _AIOHTTP_ERR else ""
         console.print(
-            "  [yellow]⚠ aiohttp not installed — using urllib (slower)[/yellow]\n"
+            f"  [yellow]⚠ aiohttp not installed{err_hint} — using urllib (slower)[/yellow]\n"
             "  [dim]Install for 3–5× faster downloads:  pip install aiohttp[/dim]"
         )
 
     # ── Scan series ───────────────────────────────────────────────────────
-    console.print()
-    console.print(Rule("[bold white] Scanning Series [/bold white]", style="cyan"))
-    console.print(f"  [dim]Host:[/dim]     {host}")
-    console.print(f"  [dim]Session:[/dim]  {session}\n")
-
     try:
         anime = AnimePaheScanner(host, session).scan(prefer_audio=args.audio_lang)
     except RuntimeError as exc:
@@ -1850,11 +2136,12 @@ async def _main(args: argparse.Namespace) -> None:
     audio_info = (
         f"{sub_n} JPN, {dub_n} DUB" if dub_n else "JPN audio"
     )
+    badge = " [bold yellow][PARTIAL DOWNLOAD FOUND][/bold yellow]" if anime.has_session else ""
     console.print(
-        f"  [green]✓[/green] [bold]{anime.title}[/bold]\n"
+        f"  [green]✓[/green] [bold]{anime.title}[/bold]{badge}\n"
         f"  — [cyan]{len(anime.episodes)}[/cyan] episodes  "
         f"({compact_ep_range(anime.episodes)})  "
-        f"[dim]{audio_info}[/dim]\n"
+        f"[dim]{audio_info}[/dim]"
     )
 
     if args.list_only:
@@ -1878,24 +2165,32 @@ async def _main(args: argparse.Namespace) -> None:
         else:
             console.print()
             console.print(Rule("[bold white] Action [/bold white]", style="cyan"))
+
+            # Calculate cache size for menu display
+            sessions = SessionManager.get_sessions()
+            legacy   = SessionManager.get_legacy_files()
+            total_cache = sum(s["size"] for s in sessions) + sum(f.stat().st_size for f in legacy)
+            cache_hint  = f" [dim]({fmt_bytes(total_cache)})[/dim]" if total_cache > 0 else ""
+
             console.print(Panel(
                 "  [bold white]1[/bold white]  [cyan]Download[/cyan]  [dim]· save .mp4 files[/dim]\n"
                 "  [bold white]2[/bold white]  [cyan]Export[/cyan]    [dim]· get M3U8 URLs + headers[/dim]\n"
                 "  [bold white]3[/bold white]  [cyan]Stream[/cyan]    [dim]· play in MPV[/dim]\n"
-                "  [bold white]4[/bold white]  [cyan]List[/cyan]      [dim]· show episode table[/dim]\n"
-                "  [bold white]5[/bold white]  [red]Exit[/red]",
+                f"  [bold white]4[/bold white]  [cyan]Sessions & Cache[/cyan]{cache_hint}\n"
+                "  [bold white]5[/bold white]  [cyan]List[/cyan]      [dim]· show episode table[/dim]\n"
+                "  [bold white]6[/bold white]  [red]Exit[/red]",
                 title=f"[bold cyan]{anime.title}[/bold cyan]",
                 border_style="cyan", box=box.ROUNDED, padding=(0, 2),
             ))
-            _default = "5" if _cached_cfg else "1"
+            _default = "6" if _cached_cfg else "1"
             choice = Prompt.ask(
                 "  [cyan]Select[/cyan]",
-                choices=["1", "2", "3", "4", "5"],
+                choices=["1", "2", "3", "4", "5", "6"],
                 default=_default,
             )
-            if choice == "5":
+            if choice == "6":
                 break
-            if choice == "4":
+            if choice == "5":
                 t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
                 t.add_column("Ep",    width=6, justify="right")
                 t.add_column("Title", style="white")
@@ -1904,6 +2199,15 @@ async def _main(args: argparse.Namespace) -> None:
                     t.add_row(ep.ep_str, ep.title or "—", audio_badge(ep.audio))
                 console.print(t)
                 continue
+
+            if choice == "4":
+                new_url = SessionManager.run()
+                if new_url and new_url != args.url:
+                    # Restart main with new URL
+                    args.url = new_url
+                    return await _main(args)
+                continue
+
             mode = {"1": "download", "2": "export", "3": "stream"}[choice]
 
         # ── Episode selection ─────────────────────────────────────────────
@@ -1979,7 +2283,7 @@ async def _main(args: argparse.Namespace) -> None:
                 if not _confirm_download(anime, chosen, cfg):
                     continue
 
-            dl = BatchDownloader(anime, cfg)
+            dl = BatchDownloader(anime, args.url, cfg)
             await dl.run(chosen)
             break
 
@@ -2058,10 +2362,14 @@ def main() -> None:
 
     try:
         asyncio.run(_main(args))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         console.print("\n  [yellow]Interrupted.[/yellow]")
         Solver.destroy_session()
         sys.exit(0)
+    except Exception as exc:
+        console.print(f"\n  [red]✗ Fatal Error:[/red] {exc}")
+        Solver.destroy_session()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
