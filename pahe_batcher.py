@@ -1374,7 +1374,10 @@ class Downloader:
                     self.cfg.quality, self.cfg.audio_lang,
                 )
                 if info.get("audio"):
-                    await loop.run_in_executor(None, self.mgr.update_status, asset_id, "downloading", audio=info["audio"])
+                    await loop.run_in_executor(
+                        None,
+                        partial(self.mgr.update_status, asset_id, "downloading", audio=info["audio"]),
+                    )
                 
                 await self._download_hls(asset_id, info)
 
