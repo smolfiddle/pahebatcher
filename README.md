@@ -1,8 +1,8 @@
-# pahe-batcher — AnimePahe Batch Downloader
+# pahebatcher — AnimePahe Batch Downloader
 
-**pahe-batcher** is a professional-grade, high-performance TUI tool for [AnimePahe](https://animepahe.pw). It automates the tedious process of resolving, downloading, and streaming anime into a seamless, parallelized terminal experience.
+**pahebatcher** is a high‑performance TUI tool for [AnimePahe](https://animepahe.pw). It automates the tedious process of resolving, downloading, and streaming anime into a seamless, parallelized terminal experience.
 
-Built with a modern asynchronous multi-queue pipeline, it features a high-speed HLS engine and a persistent "Session Library" that ensures your progress is never lost.
+Built with a modern asynchronous multi‑queue pipeline, a blazing‑fast HLS engine, and a persistent **Session Library** that remembers your progress.
 
 ![Screenshot 1](https://i.imgur.com/1Uc0hPo.png)
 ![Screenshot 2](https://i.imgur.com/RjKcvRq.png)
@@ -11,25 +11,25 @@ Built with a modern asynchronous multi-queue pipeline, it features a high-speed 
 
 ## 🚀 Quickstart
 
-1.  **Prerequisites:**
-    - **[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)**: Must be running to bypass Cloudflare protection.
-    - **[FFmpeg](https://ffmpeg.org/)**: Required for HLS segment remuxing (.ts → .mp4).
-    - **[MPV](https://mpv.io/)**: Optional, required for the `--stream` feature.
+1. **Prerequisites:**
+   - **[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)** – Must be running to bypass Cloudflare protection.
+   - **[FFmpeg](https://ffmpeg.org/)** – Required for HLS segment remuxing (`.ts` → `.mp4`).
+   - **[MPV](https://mpv.io/)** – Optional, needed for the `--stream` feature.
 
-2.  **Installation:**
+2. **Installation:**
 
-    ```bash
-    git clone https://github.com/smolfiddle/pahebatcher.git
-    cd pahebatcher
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    pip install -r requirements.txt
-    ```
+   ```bash
+   git clone https://github.com/smolfiddle/pahebatcher.git
+   cd pahebatcher
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
 
-3.  **Run:**
-    ```bash
-    python3 pahe_batcher.py "https://animepahe.pw/anime/<uuid>"
-    ```
+3. **Run:**
+   ```bash
+   python3 pahe_batcher.py "https://animepahe.pw/anime/<uuid>"
+   ```
 
 ---
 
@@ -37,68 +37,65 @@ Built with a modern asynchronous multi-queue pipeline, it features a high-speed 
 
 ### 📺 Action Modes
 
-- **Batch Download:** Fetches HLS segments in parallel and remuxes them into organized `.mp4` files using FFmpeg.
-- **Export Links:** Resolves M3U8 URLs and extracts authentication headers to a `links_export.txt` file for use in IDM or JDownloader.
-- **Stream via MPV:** Watch anime directly in terminal with a live "Now Playing" dashboard and interactive playback controls.
-- **Session & Cache Manager:** A dedicated library view to manage, resume, or cleanup active download sessions and disk usage.
+- **Batch Download** – Fetches HLS segments concurrently and remuxes them into well‑organized `.mp4` files using FFmpeg.
+- **Export Links** – Resolves M3U8 URLs and extracts authentication headers to a `links_export.txt` file (compatible with IDM, JDownloader, etc.).
+- **Stream via MPV** – Watch anime directly in the terminal with a live “Now Playing” dashboard and interactive playback controls.
+- **Session & Cache Manager** – A dedicated library view to inspect, resume, or clean up active download sessions and free disk space.
 
-### ⚙️ High-Performance Engine
+### ⚙️ High‑Performance Engine
 
-- **Multi-Queue Pipeline:** Decoupled resolver and download stages. Workers start downloading segments the moment the first stream is resolved.
-- **Direct Segment Store:** High-speed file-based staging engine (no SQLite overhead). Supports seamless resume by tracking existing segments.
-- **Shared Session Pool:** Tuned `aiohttp` connection pool with DNS caching and keep-alive for massive throughput.
-- **Hardened TLS:** Strict SSL/TLS 1.2+ context with AEAD cipher selection for secure, modern connections.
+- **Prefetch Pipeline** – Resolver and download stages are decoupled; episode _N+1_ is resolved while episode _N_ downloads.
+- **Direct Segment Store** – High‑speed file‑based staging (no SQLite overhead). Completed segments are tracked per episode, enabling seamless resume.
+- **Shared Session Pool** – One tuned `aiohttp` connection pool (DNS cache, keep‑alive) serves all concurrent downloads for maximum throughput.
+- **Hardened TLS** – Strict SSL/TLS 1.2+ context with AEAD ciphers for secure, modern connections.
 
 ### 🖥️ User Experience (TUI)
 
-- **Standardized Dashboard**: Unified progress tracking with column headers, accurate file sizes, and segment-based ETA.
-- **Contextual Resume**: Automatically detects partial downloads during scanning and displays a `[PARTIAL DOWNLOAD FOUND]` badge.
-- **Interactive Wizard:** A polished, step-by-step TUI for configuring your batch settings without memorizing flags.
+- **Unified Dashboard** – Segments‑based progress bars, real file sizes, transfer speeds, and ETA in a clean, column‑aligned layout.
+- **Automatic Resume** – Partially downloaded series are detected at startup and displayed with a `[PARTIAL DOWNLOAD FOUND]` badge.
+- **Pre‑download Summary** – Episode list, audio breakdown, estimated total size, and reused segment count before you confirm.
+- **Reusable Settings** – Quality, audio language, and output directory are remembered when switching between download/export/stream modes.
+- **Interactive Wizard** – A polished step‑by‑step TUI for configuring your batch settings without memorizing flags.
 
 ---
 
-## 🏗️ Architecture Design
+## 🏗️ Architecture
 
-PaheBatcher follows a modular **Asynchronous Pipeline Architecture**.
+PaheBatcher follows a modular **asynchronous pipeline**.
 
-### 1. The Scraper & Resolver Stage
-A dedicated resolver process handles series metadata and stream extraction. It manages FlareSolverr sessions and JavaScript unpacking to provide valid HLS manifests to the downloader workers.
+1. **Resolver Stage** – Handles series metadata and stream extraction. Manages FlareSolverr sessions, solves JavaScript challenges, and resolves Kwik links into HLS manifests.
 
-### 2. The Segment Store (Staging)
-Located in `pahe_cache/`, this layer manages the persistence of individual HLS segments. It is organized by anime title and episode, allowing for persistent sessions that survive application restarts.
+2. **Segment Store** – Staging area inside `pahe_cache/`, organized by anime title and episode. Segments are saved as numbered files, allowing persistent sessions that survive application restarts.
 
-### 3. The Download Stage
-Multiple concurrent workers consume the resolved stream info. Each worker uses a semaphore-guarded sub-pool of HLS workers to fetch segments at maximum speed while preventing CDN rate-limiting.
+3. **Download Stage** – Multiple concurrent workers consume resolved stream info. Each worker uses a semaphore‑guarded sub‑pool of HLS fetchers to download segments at maximum speed while respecting CDN limits.
 
-### 4. The Delivery Layer
-- **FFmpeg Remuxer:** Stitches segments into a stream-copy MP4 container with `+faststart` flags.
-- **MPV Bridge:** Injects dynamic headers directly into the `lavf` demuxer to enable protected streaming.
+4. **Delivery Layer**
+   - **FFmpeg Remuxer** – Concatenates segments into a stream‑copy MP4 container with `+faststart`.
+   - **MPV Bridge** – Injects dynamic headers directly into the `lavf` demuxer for protected streaming.
 
 ---
 
-## 🛠 Usage & CLI Arguments
-
-### CLI Flags
+## 🛠 CLI Usage
 
 ```bash
 python3 pahe_batcher.py <url> [options]
 ```
 
-| Argument         | Description                                         | Default       |
-| :--------------- | :-------------------------------------------------- | :------------ |
-| `URL`            | AnimePahe series URL.                               | **Required**  |
-| `-a, --all`      | Download every episode automatically.               | `False`       |
-| `-r, --range`    | Specify episode range (e.g., `1-12`, `1,4`, `13-`). | `None`        |
-| `-n, --latest`   | Download the latest N episodes.                     | `None`        |
-| `-e, --export`   | Export links/headers to a file.                     | `False`       |
-| `-s, --stream`   | Stream episodes via MPV.                            | `False`       |
-| `-l, --list`     | List episodes and exit.                             | `False`       |
-| `-q, --quality`  | Preferred quality: `1080`, `720`, `360`.            | `1080`        |
-| `-o, --output`   | Output directory.                                   | `./downloads` |
-| `-j, --parallel` | Concurrent episode downloads (max 6).               | `2`           |
-| `-w, --workers`  | HLS segment workers per episode (max 32).           | `24`          |
-| `--audio`        | Audio preference: `jpn` (sub) or `eng` (dub).       | `jpn`         |
-| `--keep-temp`    | Keep raw segment files after download.              | `False`       |
+| Argument         | Description                                   | Default       |
+| :--------------- | :-------------------------------------------- | :------------ |
+| `URL`            | AnimePahe series URL.                         | **Required**  |
+| `-a, --all`      | Download every episode automatically.         | `False`       |
+| `-r, --range`    | Episode range (e.g., `1-12`, `1,4`, `13-`).   | `None`        |
+| `-n, --latest`   | Download the latest N episodes.               | `None`        |
+| `-e, --export`   | Export M3U8 links and headers to a file.      | `False`       |
+| `-s, --stream`   | Stream episodes via MPV.                      | `False`       |
+| `-l, --list`     | List episodes and exit.                       | `False`       |
+| `-q, --quality`  | Preferred quality: `1080`, `720`, or `360`.   | `1080`        |
+| `-o, --output`   | Output directory.                             | `./downloads` |
+| `-j, --parallel` | Concurrent episode downloads (max 6).         | `2`           |
+| `-w, --workers`  | HLS segment workers per episode (max 32).     | `24`          |
+| `--audio`        | Audio preference: `jpn` (sub) or `eng` (dub). | `jpn`         |
+| `--keep-temp`    | Keep raw segment files after download.        | `False`       |
 
 ---
 
@@ -118,4 +115,4 @@ This tool is intended for personal and educational use. Downloading copyrighted 
 
 ## 📄 License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details
