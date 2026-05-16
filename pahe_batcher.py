@@ -132,7 +132,7 @@ console = Console()
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────
 
-VERSION             = "1.2.0"
+VERSION             = "1.3.0"
 HLS_WORKERS         = 16        # parallel HLS segment fetches per episode
 DB_TIMEOUT          = 120.0
 RETRY_ATTEMPTS      = 5
@@ -187,13 +187,15 @@ class AnimeInfo:
 
 @dataclass
 class DownloadConfig:
-    output_dir:   str  = "./downloads"
-    max_parallel: int  = 2
-    hls_workers:  int  = HLS_WORKERS
-    purge_db:     bool = True
-    quality:      int  = 1080
-    export_mode:  bool = False
-    stream_mode:  bool = False
+    output_dir:     str  = "./downloads"
+    max_parallel:   int  = 2
+    hls_workers:    int  = HLS_WORKERS
+    purge_db:       bool = True
+    quality:        int  = 1080
+    export_mode:    bool = False
+    stream_mode:    bool = False
+    audio_lang:     str  = "jpn"   # "jpn" = subbed, "eng" = dubbed
+    fallback_audio: bool = True    # if preferred lang unavailable, use the other
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -221,6 +223,15 @@ def _make_ep_prefix(ep_num: str) -> str:
         return f"{float(ep_num):05.1f}" if "." in ep_num else f"{int(ep_num):03d}"
     except (ValueError, TypeError):
         return ep_num
+
+
+def _audio_display(audio: str) -> str:
+    """Return a rich-styled badge for the audio language."""
+    if audio == "eng":
+        return "[yellow]DUB[/yellow]"
+    elif audio == "jpn":
+        return "[dim]JPN[/dim]"
+    return f"[cyan]{audio.upper()}[/cyan]"
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -967,13 +978,80 @@ def _resolve_one_kwik(kwik_url: str) -> Optional[Dict]:
     return None
 
 
-def extract_animepahe_stream(episode_url: str, preferred_quality: int = 1080) -> Dict[str, Any]:
+def _has_dub_attribute(tag_attrs: str) -> bool:
+    """Check if an HTML tag's attributes contain data-audio="eng"."""
+    return bool(re.search(r'''data-audio\s*=\s*["']eng["']''', tag_attrs, re.I))
+
+
+def _parse_resolution_buttons(html: str) -> List[Tuple[int, str, bool, str]]:
+    """
+    Extract quality options from <button> tags inside the resolution menu.
+    Returns a list of (resolution, kwik_url, is_dub, fansub_group).
+    """
+    entries: List[Tuple[int, str, bool, str]] = []
+
+    # Look for the resolution menu container; it's typically a div with id "resolutionMenu"
+    menu_match = re.search(
+        r'<div[^>]+id=["\']resolutionMenu["\'][^>]*>(.*?)</div>', html, re.I | re.S
+    )
+    if not menu_match:
+        return entries
+
+    menu_html = menu_match.group(1)
+
+    # Find all buttons inside the menu
+    for btn_match in re.finditer(r'<button\b([^>]*?)>(.*?)</button>', menu_html, re.I | re.S):
+        attrs = btn_match.group(1)
+        text = btn_match.group(2).strip()
+
+        src_m = re.search(r'data-src=["\']([^"\']+kwik\.[^"\']+)["\']', attrs, re.I)
+        if not src_m:
+            continue
+        kwik_url = src_m.group(1)
+
+        # 1) Try data-resolution attribute first (most reliable)
+        res_m = re.search(r'data-resolution=["\']?(\d+)["\']?', attrs, re.I)
+        if res_m:
+            resolution = int(res_m.group(1))
+        else:
+            # 2) Fallback: parse resolution from button text (e.g. "1080p")
+            res_m = re.match(r'(\d+)\s*p', text, re.I)
+            if not res_m:
+                continue
+            resolution = int(res_m.group(1))
+
+        is_dub = _has_dub_attribute(attrs)
+
+        # Extract fansub group
+        fansub_m = re.search(r'data-fansub=["\']([^"\']+)["\']', attrs, re.I)
+        if fansub_m:
+            fansub = fansub_m.group(1)
+        else:
+            parts = text.split("·")
+            fansub = parts[0].strip() if parts else ""
+
+        entries.append((resolution, kwik_url, is_dub, fansub))
+
+    return entries
+
+
+def extract_animepahe_stream(
+    episode_url: str,
+    preferred_quality: int = 1080,
+    prefer_audio: str = "jpn",
+) -> Dict[str, Any]:
     """
     Resolve an AnimePahe play-page URL to a streamable M3U8.
 
     Quality selection:
     - Prefers the highest quality ≤ preferred_quality.
     - Falls back to the lowest available if every option exceeds the preference.
+
+    Audio selection:
+    - When `prefer_audio` is "jpn", dub (data-audio="eng") links are excluded.
+    - When `prefer_audio` is "eng", only dub links are kept.
+    - If no links match the preference after filtering, all links are used
+      (graceful fallback).
     """
     sol = Solver.request(episode_url, use_cache=True)
     if not sol or "response" not in sol:
@@ -981,39 +1059,57 @@ def extract_animepahe_stream(episode_url: str, preferred_quality: int = 1080) ->
 
     html = sol["response"]
 
-    # ── Quality Selection ──────────────────────────────────────────────────
-    quality_map: Dict[int, str] = {}
+    # ── Parse resolution buttons ─────────────────────────────────────────
+    entries = _parse_resolution_buttons(html)  # (res, url, is_dub, fansub)
 
-    # Method 1: <button>/<a> tags with data-src + data-resolution attributes
-    for tag_attrs in re.findall(r'<(?:button|a)\b([^>]+)', html, re.I):
-        src_m = re.search(r'data-src=["\']([^"\']*kwik\.[^"\']+)["\']', tag_attrs, re.I)
-        res_m = re.search(r'data-resolution=["\']?(\d+)["\']?', tag_attrs, re.I)
-        if src_m and res_m:
-            quality_map[int(res_m.group(1))] = src_m.group(1)
-
-    # Method 2: resolution embedded in link text (e.g. <a href="...">720p</a>)
-    if not quality_map:
+    # ── Fallback: resolution embedded in link text ────────────────────────
+    if not entries:
+        quality_map: Dict[int, Tuple[str, bool, str]] = {}
         for kwik_url, q_str in re.findall(
             r'(?:href|data-src)=["\']([^"\']*kwik\.[^"\']+)["\'][^>]*>\s*(?:\S+\s+)?(\d+)p',
             html, re.I,
         ):
             with contextlib.suppress(ValueError):
-                quality_map[int(q_str)] = kwik_url
+                quality_map[int(q_str)] = (kwik_url, False, "")
+    else:
+        # ── Audio filtering ───────────────────────────────────────────────
+        if prefer_audio == "jpn":
+            filtered_entries = [e for e in entries if not e[2]]  # not dub
+        else:  # "eng"
+            filtered_entries = [e for e in entries if e[2]]      # is dub
+
+        if not filtered_entries:
+            log.warning(
+                "Audio filter (%s) would remove all links — using all available.",
+                prefer_audio,
+            )
+            filtered_entries = entries
+
+        # Build final quality map (resolution → (url, is_dub, fansub))
+        quality_map = {}
+        for resolution, url, is_dub, fansub in filtered_entries:
+            if resolution not in quality_map:
+                quality_map[resolution] = (url, is_dub, fansub)
+            # If duplicate resolutions exist after filtering, we keep the first
+            # (subbed entries appear before dubbed in the menu).
 
     chosen_kwik: Optional[str] = None
+    is_dub:      bool          = False
+    fansub:      str           = ""
 
     if quality_map:
         sorted_quals = sorted(quality_map.keys(), reverse=True)
         for q in sorted_quals:
             if q <= preferred_quality:
-                chosen_kwik = quality_map[q]
+                chosen_kwik, is_dub, fansub = quality_map[q]
                 break
         if not chosen_kwik:
-            chosen_kwik = quality_map[sorted_quals[-1]]
+            chosen_kwik, is_dub, fansub = quality_map[sorted_quals[-1]]
         log.debug(
-            "Quality map: %s  |  preferred: %dp  |  chosen: %dp",
+            "Quality map: %s  |  preferred: %dp  |  chosen: %dp  |  audio: %s",
             sorted(quality_map), preferred_quality,
-            next(q for q, u in quality_map.items() if u == chosen_kwik),
+            next(q for q, v in quality_map.items() if v[0] == chosen_kwik),
+            prefer_audio,
         )
     else:
         # Method 3: generic Kwik-link scan (no resolution metadata)
@@ -1028,7 +1124,9 @@ def extract_animepahe_stream(episode_url: str, preferred_quality: int = 1080) ->
 
     info = _resolve_one_kwik(chosen_kwik)
     if info:
-        info["title"] = title
+        info["title"]  = title
+        info["audio"]  = "eng" if is_dub else "jpn"
+        info["fansub"] = fansub
         return info
 
     raise RuntimeError(f"Could not resolve Kwik URL: {chosen_kwik}")
@@ -1272,8 +1370,12 @@ class Downloader:
                 await loop.run_in_executor(None, self.mgr.update_status, asset_id, "extracting")
 
                 info = await loop.run_in_executor(
-                    None, extract_animepahe_stream, asset["source_url"], self.cfg.quality,
+                    None, extract_animepahe_stream, asset["source_url"],
+                    self.cfg.quality, self.cfg.audio_lang,
                 )
+                if info.get("audio"):
+                    await loop.run_in_executor(None, self.mgr.update_status, asset_id, "downloading", audio=info["audio"])
+                
                 await self._download_hls(asset_id, info)
 
             except Exception as exc:
@@ -1461,12 +1563,17 @@ class AnimePaheScanner:
                 session  = ep_session,
                 title    = (item.get("title") or "").strip(),
                 fansub   = (item.get("fansub") or "").strip(),
-                audio    = (item.get("audio") or "jpn").strip(),
+                audio    = (item.get("audio") or "jpn").strip().lower(),  # ← normalized
                 play_url = f"https://{self.host}/play/{self.session}/{ep_session}",
             ))
         return eps
 
-    def scan(self) -> AnimeInfo:
+    def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
+        """
+        Fetch the full episode list and optionally deduplicate by episode
+        number, keeping the entry that matches `prefer_audio` ("jpn" or "eng").
+        If a preferred-language entry doesn't exist, the available one is kept.
+        """
         console.print("  [dim]Fetching episode list …[/dim]", end="\r")
         first = self._fetch_page(1)
         if not first:
@@ -1489,7 +1596,19 @@ class AnimePaheScanner:
                 anime.episodes.extend(self._parse_page(data))
 
         console.print(" " * 60, end="\r")   # clear the spinner line
-        anime.episodes.sort(key=lambda e: e.number)
+
+        # ── Deduplicate by episode number, honouring audio preference ─────
+        if prefer_audio:
+            best: Dict[float, EpisodeInfo] = {}
+            for ep in anime.episodes:
+                if ep.number not in best:
+                    best[ep.number] = ep
+                elif ep.audio == prefer_audio:
+                    best[ep.number] = ep  # override with preferred
+            anime.episodes = sorted(best.values(), key=lambda e: e.number)
+        else:
+            anime.episodes.sort(key=lambda e: e.number)
+
         return anime
 
 
@@ -1551,7 +1670,7 @@ def _print_ep_table(episodes: List[EpisodeInfo], selected: Set[str]) -> None:
     t.add_column("Audio", width=5)
     for ep in episodes:
         check = "[green]✓[/green]" if ep.session in selected else " "
-        audio = "[yellow]DUB[/yellow]" if ep.audio != "jpn" else "[dim]JPN[/dim]"
+        audio = _audio_display(ep.audio)
         t.add_row(check, ep.ep_str, ep.title or "—", audio)
     console.print(t)
 
@@ -1690,15 +1809,27 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
     quality = {1: 360, 2: 720, 3: 1080}[int(Prompt.ask("  [cyan]Select[/cyan]",
                                                           choices=["1", "2", "3"], default=_q_default))]
 
+    # ── Audio Language ────────────────────────────────────────────────────
+    _audio_default = "1" if defaults.audio_lang == "jpn" else "2"
+    console.print(Panel(
+        "  [bold white]1[/bold white]  [cyan]Subbed[/cyan]  [dim](Japanese original)[/dim]\n"
+        "  [bold white]2[/bold white]  [yellow]Dubbed[/yellow]  [dim](English)[/dim]",
+        title="[cyan]Audio Language[/cyan]", border_style="dim cyan",
+        box=box.ROUNDED, padding=(0, 2),
+    ))
+    audio_choice = Prompt.ask("  [cyan]Select[/cyan]", choices=["1", "2"], default=_audio_default)
+    audio_lang = "jpn" if audio_choice == "1" else "eng"
+
     if stream_mode:
-        return DownloadConfig(quality=quality, stream_mode=True)
+        return DownloadConfig(quality=quality, stream_mode=True, audio_lang=audio_lang)
 
     # ── Output directory ──────────────────────────────────────────────────
     output_dir = Prompt.ask("  [cyan]Output directory[/cyan]", default=defaults.output_dir).strip()
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     if export_mode:
-        return DownloadConfig(output_dir=output_dir, quality=quality, export_mode=True)
+        return DownloadConfig(output_dir=output_dir, quality=quality,
+                              export_mode=True, audio_lang=audio_lang)
 
     # ── Concurrency ───────────────────────────────────────────────────────
     console.print(Panel(
@@ -1718,12 +1849,13 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
 
     cfg = DownloadConfig(
         output_dir=output_dir, max_parallel=max_parallel, hls_workers=hls_workers,
-        purge_db=purge_db, quality=quality,
+        purge_db=purge_db, quality=quality, audio_lang=audio_lang,
     )
     console.print()
     console.print(Panel(
         f"  [dim]Output:[/dim]      {cfg.output_dir}\n"
         f"  [dim]Quality:[/dim]     [cyan]{cfg.quality}p[/cyan]\n"
+        f"  [dim]Audio:[/dim]       [cyan]{'Subbed' if cfg.audio_lang == 'jpn' else 'Dubbed'}[/cyan]\n"
         f"  [dim]Parallel:[/dim]    [cyan]{cfg.max_parallel}[/cyan] downloads  ·  "
         f"[cyan]{cfg.hls_workers}[/cyan] segment workers\n"
         f"  [dim]Temp DB:[/dim]     {'purged after finish' if cfg.purge_db else 'kept'}",
@@ -1829,7 +1961,8 @@ async def _run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
             progress.update(task, description=f"Resolving: {ep.label[:40]}")
             try:
                 info       = await loop.run_in_executor(
-                    None, extract_animepahe_stream, ep.play_url, cfg.quality,
+                    None, extract_animepahe_stream, ep.play_url,
+                    cfg.quality, cfg.audio_lang,
                 )
                 cookie_str = format_cookies(info["cookies"])
                 ff_cmd     = (
@@ -1904,15 +2037,25 @@ async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downlo
             ) as progress:
                 progress.add_task("resolve", total=None)
                 info = await loop.run_in_executor(
-                    None, extract_animepahe_stream, ep.play_url, cfg.quality,
+                    None, extract_animepahe_stream, ep.play_url,
+                    cfg.quality, cfg.audio_lang,
                 )
 
-                # Update episode title if a better one comes from the stream page.
-                if info.get("title") and (not ep.title or ep.title == "—"):
+                # Update metadata if better info comes from the stream page.
+                if info.get("audio"):
+                    ep.audio = info["audio"]
+                if info.get("fansub"):
+                    ep.fansub = info["fansub"]
+
+                if info.get("title") and (not ep.title or ep.title == "—" or "animepahe" in ep.title.lower()):
                     new_title = re.sub(r"\s*[|·].*$", "", info["title"]).strip()
                     new_title = re.sub(
                         r"^Watch\s+.*?\s+Episode\s+\d+\s+Online.*", "", new_title, flags=re.I,
                     ).strip()
+                    # If we are playing SUB but the title says DUB, strip it.
+                    if ep.audio == "jpn":
+                        new_title = re.sub(r"\s+DUB\s*$", "", new_title, flags=re.I).strip()
+                    
                     if new_title:
                         ep.title = new_title
 
@@ -2054,14 +2197,18 @@ async def _main_async(args: argparse.Namespace) -> None:
     console.print(f"  [dim]Session:[/dim]      {session}\n")
 
     try:
-        anime = AnimePaheScanner(host, session).scan()
+        anime = AnimePaheScanner(host, session).scan(prefer_audio=args.audio_lang)
     except RuntimeError as exc:
         console.print(f"\n  [red]✗ Scan failed:[/red] {exc}")
         sys.exit(1)
 
+    # Show audio breakdown
+    sub_count = sum(1 for ep in anime.episodes if ep.audio == "jpn")
+    dub_count = len(anime.episodes) - sub_count
+    audio_info = f"{sub_count} JPN, {dub_count} DUB" if dub_count else "JPN audio"
     console.print(
         f"  [green]✓[/green] [bold]{anime.title}[/bold]"
-        f"  — [cyan]{len(anime.episodes)}[/cyan] episodes found\n"
+        f"  — [cyan]{len(anime.episodes)}[/cyan] episodes found  [dim]({audio_info})[/dim]\n"
     )
 
     # ── List-only mode ────────────────────────────────────────────────────
@@ -2071,7 +2218,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         table.add_column("Title", style="white")
         table.add_column("Audio", width=5)
         for ep in anime.episodes:
-            audio = "[yellow]DUB[/yellow]" if ep.audio != "jpn" else "[dim]JPN[/dim]"
+            audio = _audio_display(ep.audio)
             table.add_row(ep.ep_str, ep.title or "—", audio)
         console.print(table)
         return
@@ -2124,6 +2271,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         quality      = args.quality,
         export_mode  = args.export,
         stream_mode  = args.stream,
+        audio_lang   = args.audio_lang,
     )
 
     if _noninteractive:
@@ -2132,6 +2280,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         console.print(Panel(
             f"  [dim]Output:[/dim]      {cfg.output_dir}\n"
             f"  [dim]Quality:[/dim]     [cyan]{cfg.quality}p[/cyan]\n"
+            f"  [dim]Audio:[/dim]       [cyan]{'Subbed' if cfg.audio_lang == 'jpn' else 'Dubbed'}[/cyan]\n"
             f"  [dim]Parallel:[/dim]    [cyan]{cfg.max_parallel}[/cyan] downloads  ·  "
             f"[cyan]{cfg.hls_workers}[/cyan] segment workers\n"
             f"  [dim]Temp DB:[/dim]     {'purged after finish' if cfg.purge_db else 'kept'}",
@@ -2174,6 +2323,7 @@ def main() -> None:
             "  %(prog)s https://animepahe.ru/anime/<uuid> --range 1-12          # season 1\n"
             "  %(prog)s https://animepahe.ru/anime/<uuid> --latest 3            # last 3 eps\n"
             "  %(prog)s https://animepahe.ru/anime/<uuid> --list                # list only\n"
+            "  %(prog)s https://animepahe.ru/anime/<uuid> --audio eng --all     # dubbed all\n"
             "  %(prog)s https://animepahe.ru/anime/<uuid> --all -o ~/anime -j 3 # full flags\n"
         ),
     )
@@ -2196,18 +2346,21 @@ def main() -> None:
     parser.add_argument("--stream",  "-s", action="store_true",
                         help="Stream episodes directly via MPV")
 
-    parser.add_argument("-o", "--output",   default="./downloads",
+    parser.add_argument("-o", "--output",    default="./downloads",
                         help="Output directory (default: ./downloads)")
-    parser.add_argument("-q", "--quality",  metavar="Q", type=int,
+    parser.add_argument("-q", "--quality",   metavar="Q", type=int,
                         choices=[360, 720, 1080], default=1080,
                         help="Preferred quality: 360, 720, or 1080 (default: 1080)")
-    parser.add_argument("-j", "--parallel", metavar="N", type=int, default=2,
+    parser.add_argument("--audio",           metavar="LANG", type=str,
+                        choices=["jpn", "eng"], default="jpn", dest="audio_lang",
+                        help="Preferred audio: jpn = subbed (default), eng = dubbed")
+    parser.add_argument("-j", "--parallel",  metavar="N", type=int, default=2,
                         help="Max concurrent downloads (default: 2, max: 6)")
-    parser.add_argument("-w", "--workers",  metavar="N", type=int, default=HLS_WORKERS,
+    parser.add_argument("-w", "--workers",   metavar="N", type=int, default=HLS_WORKERS,
                         help=f"HLS segment workers per download (default: {HLS_WORKERS}, max: 32)")
-    parser.add_argument("--keep-db",        action="store_false", dest="purge_db",
+    parser.add_argument("--keep-db",         action="store_false", dest="purge_db",
                         help="Keep the SQLite database after download (default: deleted)")
-    parser.add_argument("-y", "--yes",      action="store_true",
+    parser.add_argument("-y", "--yes",       action="store_true",
                         help="Skip all confirmation prompts")
 
     args = parser.parse_args()
