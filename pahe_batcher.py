@@ -1884,6 +1884,7 @@ async def _run_batch(episodes: List[EpisodeInfo], cfg: DownloadConfig, db: Vault
     dash = Dashboard()
     dl   = Downloader(db, mgr, dash, cfg)
     loop = asyncio.get_running_loop()
+    start_time = time.time()
 
     asset_ids: List[int] = []
     for ep in episodes:
@@ -1898,11 +1899,13 @@ async def _run_batch(episodes: List[EpisodeInfo], cfg: DownloadConfig, db: Vault
         await asyncio.sleep(0.5)
     finally:
         dash.stop()
-        console.print("  [dim]Releasing FlareSolverr session …[/dim]", end="\r")
-        Solver.destroy_session()
-        console.print(" " * 50, end="\r")
 
     # ── Summary table ─────────────────────────────────────────────────────
+    duration = time.time() - start_time
+    minutes  = int(duration // 60)
+    seconds  = int(duration % 60)
+    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+
     console.print()
     console.print(Rule("[bold green] All Done [/bold green]", style="green"))
     ok = fail = 0
@@ -1937,6 +1940,7 @@ async def _run_batch(episodes: List[EpisodeInfo], cfg: DownloadConfig, db: Vault
         status_line += f"  [bold red]✗ {fail} failed[/bold red]"
     console.print(Panel(
         f"  {status_line}\n"
+        f"  [dim]Duration:[/dim]  [cyan]{time_str}[/cyan]\n"
         f"  [dim]Saved to:[/dim]  {cfg.output_dir}",
         border_style="green" if not fail else "yellow", box=box.ROUNDED,
     ))
@@ -1946,6 +1950,7 @@ async def _run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
     """Resolve M3U8 links for all episodes and write them to a text file."""
     console.print()
     console.print(Rule("[bold white] Exporting Links [/bold white]", style="cyan"))
+    start_time = time.time()
 
     results: List[Dict[str, str]] = []
     with Progress(
@@ -1989,6 +1994,11 @@ async def _run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
         console.print("\n  [red]No links were successfully resolved.[/red]")
         return
 
+    duration = time.time() - start_time
+    minutes  = int(duration // 60)
+    seconds  = int(duration % 60)
+    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+
     out_file = Path(cfg.output_dir) / "links_export.txt"
     try:
         with open(out_file, "w", encoding="utf-8") as f:
@@ -2007,13 +2017,12 @@ async def _run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
         console.print()
         console.print(Panel(
             f"  [green]✓ Successfully exported [bold]{len(results)}[/bold] links.[/green]\n"
+            f"  [dim]Duration:[/dim]  [cyan]{time_str}[/cyan]\n"
             f"  [dim]Saved to:[/dim]  [cyan]{out_file}[/cyan]",
             border_style="green", box=box.ROUNDED,
         ))
     except OSError as exc:
         console.print(f"  [red]✗ Failed to write export file:[/red] {exc}")
-    finally:
-        Solver.destroy_session()
 
 
 async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
@@ -2155,7 +2164,6 @@ async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downlo
                 break
 
     console.print("\n  [yellow]Playback session ended.[/yellow]")
-    Solver.destroy_session()
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -2349,6 +2357,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         last_action = mode_choice
         if cfg.export_mode:
             await _run_export(chosen, cfg)
+            break  # Exit after export
         elif cfg.stream_mode:
             await _run_stream(anime.title, chosen, cfg)
         else:
@@ -2373,6 +2382,7 @@ async def _main_async(args: argparse.Namespace) -> None:
                         console.print("  [dim]Temp database cleaned up.[/dim]")
                     except OSError as exc:
                         console.print(f"  [yellow]⚠ Could not remove database:[/yellow] {exc}")
+            break  # Exit after download
 
         if _noninteractive:
             break
