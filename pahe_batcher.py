@@ -383,6 +383,7 @@ CREATE TABLE IF NOT EXISTS assets (
     status      TEXT    NOT NULL DEFAULT 'pending',
     total_bytes INTEGER,
     ep_number   TEXT,
+    audio       TEXT,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL
 );
@@ -426,10 +427,12 @@ class VaultDB:
         try:
             conn.execute("PRAGMA auto_vacuum = FULL")
             conn.executescript(_SCHEMA)
-            # Schema migration: add ep_number column if absent (older DBs).
+            # Schema migration: add missing columns if absent (older DBs).
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(assets)").fetchall()}
             if "ep_number" not in cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN ep_number TEXT")
+            if "audio" not in cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN audio TEXT")
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -1374,11 +1377,8 @@ class Downloader:
                     self.cfg.quality, self.cfg.audio_lang,
                 )
                 if info.get("audio"):
-                    await loop.run_in_executor(
-                        None,
-                        partial(self.mgr.update_status, asset_id, "downloading", audio=info["audio"]),
-                    )
-                
+                    await loop.run_in_executor(None, self.mgr.update_status, asset_id, "downloading", audio=info["audio"])
+
                 await self._download_hls(asset_id, info)
 
             except Exception as exc:
@@ -1682,8 +1682,10 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
     """Interactive episode picker presented to the user."""
     console.print()
     console.print(Rule(f"[bold white] Episode Selection — {anime.title} [/bold white]", style="cyan"))
+    
+    available = _compact_ep_list(anime.episodes)
     console.print(
-        f"  [cyan]{len(anime.episodes)}[/cyan] episodes found"
+        f"  [cyan]{len(anime.episodes)}[/cyan] episodes found: [bold cyan]{available}[/bold cyan]"
         f"  [dim]({anime.total} total in series)[/dim]\n"
     )
     console.print(Panel(
@@ -1725,7 +1727,11 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
         raw    = Prompt.ask("  [cyan]Episodes[/cyan]").strip()
         nums   = _parse_ep_range(raw, anime.episodes)
         chosen = [eps_by_num[n] for n in nums if n in eps_by_num]
-        console.print(f"  [green]✓[/green] Selected [cyan]{len(chosen)}[/cyan] episodes.")
+        if not chosen:
+            console.print(f"  [yellow]⚠ No episodes matched range [bold]{raw}[/bold].[/yellow]")
+            console.print(f"    Available numbers: [cyan]{available}[/cyan]")
+        else:
+            console.print(f"  [green]✓[/green] Selected [cyan]{len(chosen)}[/cyan] episodes.")
         return chosen
 
     # mode == "L" — interactive toggle checklist
@@ -2058,7 +2064,7 @@ async def _run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downlo
                     # If we are playing SUB but the title says DUB, strip it.
                     if ep.audio == "jpn":
                         new_title = re.sub(r"\s+DUB\s*$", "", new_title, flags=re.I).strip()
-                    
+
                     if new_title:
                         ep.title = new_title
 
@@ -2205,13 +2211,14 @@ async def _main_async(args: argparse.Namespace) -> None:
         console.print(f"\n  [red]✗ Scan failed:[/red] {exc}")
         sys.exit(1)
 
-    # Show audio breakdown
+    # Show audio breakdown and range
     sub_count = sum(1 for ep in anime.episodes if ep.audio == "jpn")
     dub_count = len(anime.episodes) - sub_count
     audio_info = f"{sub_count} JPN, {dub_count} DUB" if dub_count else "JPN audio"
+    available_range = _compact_ep_list(anime.episodes)
     console.print(
-        f"  [green]✓[/green] [bold]{anime.title}[/bold]"
-        f"  — [cyan]{len(anime.episodes)}[/cyan] episodes found  [dim]({audio_info})[/dim]\n"
+        f"  [green]✓[/green] [bold]{anime.title}[/bold]\n"
+        f"  — [cyan]{len(anime.episodes)}[/cyan] episodes found: [bold cyan]{available_range}[/bold cyan]  [dim]({audio_info})[/dim]\n"
     )
 
     # ── List-only mode ────────────────────────────────────────────────────
@@ -2226,92 +2233,104 @@ async def _main_async(args: argparse.Namespace) -> None:
         console.print(table)
         return
 
-    # ── Episode selection ─────────────────────────────────────────────────
-    console.print(Rule("[bold white] Step 2/3 — Select Episodes [/bold white]", style="cyan"))
+    # ── Interactive Loop ──────────────────────────────────────────────────
+    first_run = True
+    while True:
+        if not first_run:
+            console.print()
+            if not Confirm.ask("  [bold cyan]Perform another action on this series?[/bold cyan]", default=True):
+                break
+        first_run = False
 
-    if args.all:
-        chosen = noninteractive_episodes(anime, "all")
-    elif args.range:
-        chosen = noninteractive_episodes(anime, "range", range_str=args.range)
+        # ── Episode selection ─────────────────────────────────────────────────
+        console.print(Rule("[bold white] Step 2/3 — Select Episodes [/bold white]", style="cyan"))
+
+        if args.all:
+            chosen = noninteractive_episodes(anime, "all")
+        elif args.range:
+            chosen = noninteractive_episodes(anime, "range", range_str=args.range)
+            if not chosen:
+                console.print(f"  [red]✗ No episodes matched range:[/red] {args.range}")
+                console.print(f"    Available numbers: [cyan]{available_range}[/cyan]")
+                sys.exit(1)
+        elif args.latest:
+            chosen = noninteractive_episodes(anime, "latest", latest_n=args.latest)
+        else:
+            chosen = select_episodes(anime)
+
         if not chosen:
-            console.print(f"  [red]✗ No episodes matched range:[/red] {args.range}")
-            sys.exit(1)
-    elif args.latest:
-        chosen = noninteractive_episodes(anime, "latest", latest_n=args.latest)
-    else:
-        chosen = select_episodes(anime)
+            if args.all or args.range or args.latest:
+                sys.exit(0)
+            continue
 
-    if not chosen:
-        console.print("\n  [yellow]No episodes selected — exiting.[/yellow]")
-        return
-
-    # ── Confirm queue ─────────────────────────────────────────────────────
-    ep_summary = _compact_ep_list(chosen)
-    console.print()
-    console.print(Panel(
-        f"  Series:   [bold white]{anime.title}[/bold white]\n"
-        f"  Episodes: [cyan]{ep_summary}[/cyan]  ([bold]{len(chosen)}[/bold] total)",
-        title="[green]Download Queue[/green]", border_style="green", box=box.ROUNDED,
-    ))
-
-    _noninteractive = args.yes or args.all or args.range or args.latest or args.export or args.stream
-    if not _noninteractive:
-        if not Confirm.ask("  [bold cyan]Proceed?[/bold cyan]", default=True):
-            console.print("  [yellow]Cancelled.[/yellow]")
-            return
-
-    # ── Configure ─────────────────────────────────────────────────────────
-    console.print(Rule("[bold white] Step 3/3 — Configure & Download [/bold white]", style="cyan"))
-
-    safe_title = _sanitize_filename(anime.title)
-    series_dir = os.path.join(args.output, safe_title)
-
-    defaults = DownloadConfig(
-        output_dir   = series_dir,
-        max_parallel = args.parallel,
-        hls_workers  = args.workers,
-        purge_db     = args.purge_db,
-        quality      = args.quality,
-        export_mode  = args.export,
-        stream_mode  = args.stream,
-        audio_lang   = args.audio_lang,
-    )
-
-    if _noninteractive:
-        cfg = defaults
-        Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+        # ── Confirm queue ─────────────────────────────────────────────────────
+        ep_summary = _compact_ep_list(chosen)
+        console.print()
         console.print(Panel(
-            f"  [dim]Output:[/dim]      {cfg.output_dir}\n"
-            f"  [dim]Quality:[/dim]     [cyan]{cfg.quality}p[/cyan]\n"
-            f"  [dim]Audio:[/dim]       [cyan]{'Subbed' if cfg.audio_lang == 'jpn' else 'Dubbed'}[/cyan]\n"
-            f"  [dim]Parallel:[/dim]    [cyan]{cfg.max_parallel}[/cyan] downloads  ·  "
-            f"[cyan]{cfg.hls_workers}[/cyan] segment workers\n"
-            f"  [dim]Temp DB:[/dim]     {'purged after finish' if cfg.purge_db else 'kept'}",
-            title="[bold green]✓ Ready[/bold green]", border_style="green", box=box.ROUNDED,
+            f"  Series:   [bold white]{anime.title}[/bold white]\n"
+            f"  Episodes: [cyan]{ep_summary}[/cyan]  ([bold]{len(chosen)}[/bold] total)",
+            title="[green]Download Queue[/green]", border_style="green", box=box.ROUNDED,
         ))
-    else:
-        cfg = _wizard_config(defaults)
 
-    # ── Export / Stream / Download ────────────────────────────────────────
-    if cfg.export_mode:
-        await _run_export(chosen, cfg)
-        return
+        _noninteractive = args.yes or args.all or args.range or args.latest or args.export or args.stream
+        if not _noninteractive:
+            if not Confirm.ask("  [bold cyan]Proceed?[/bold cyan]", default=True):
+                continue
 
-    if cfg.stream_mode:
-        await _run_stream(anime.title, chosen, cfg)
-        return
+        # ── Configure ─────────────────────────────────────────────────────────
+        console.print(Rule("[bold white] Step 3/3 — Configure & Action [/bold white]", style="cyan"))
 
-    if cfg.purge_db:
-        fd, db_path = tempfile.mkstemp(suffix=".db", prefix="pahe_staging_")
-        os.close(fd)
-    else:
-        db_path = "pahe_batcher.db"
+        safe_title = _sanitize_filename(anime.title)
+        series_dir = os.path.join(args.output, safe_title)
 
-    db = VaultDB(db_path)
-    try:
-        await _run_batch(chosen, cfg, db)
-    finally:
-        Solver.destroy_session()
+        defaults = DownloadConfig(
+            output_dir   = series_dir,
+            max_parallel = args.parallel,
+            hls_workers  = args.workers,
+            purge_db     = args.purge_db,
+            quality      = args.quality,
+            export_mode  = args.export,
+            stream_mode  = args.stream,
+            audio_lang   = args.audio_lang,
+        )
+
+        if _noninteractive:
+            cfg = defaults
+            Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+            console.print(Panel(
+                f"  [dim]Output:[/dim]      {cfg.output_dir}\n"
+                f"  [dim]Quality:[/dim]     [cyan]{cfg.quality}p[/cyan]\n"
+                f"  [dim]Audio:[/dim]       [cyan]{'Subbed' if cfg.audio_lang == 'jpn' else 'Dubbed'}[/cyan]\n"
+                f"  [dim]Parallel:[/dim]    [cyan]{cfg.max_parallel}[/cyan] downloads  ·  "
+                f"[cyan]{cfg.hls_workers}[/cyan] segment workers\n"
+                f"  [dim]Temp DB:[/dim]     {'purged after finish' if cfg.purge_db else 'kept'}",
+                title="[bold green]✓ Ready[/bold green]", border_style="green", box=box.ROUNDED,
+            ))
+        else:
+            cfg = _wizard_config(defaults)
+
+        # ── Export / Stream / Download ────────────────────────────────────────
+        if cfg.export_mode:
+            await _run_export(chosen, cfg)
+        elif cfg.stream_mode:
+            await _run_stream(anime.title, chosen, cfg)
+        else:
+            if cfg.purge_db:
+                fd, db_path = tempfile.mkstemp(suffix=".db", prefix="pahe_staging_")
+                os.close(fd)
+            else:
+                db_path = "pahe_batcher.db"
+
+            db = VaultDB(db_path)
+            try:
+                await _run_batch(chosen, cfg, db)
+            finally:
+                pass # cleanup handled inside _run_batch
+
+        if _noninteractive:
+            break
+
+    Solver.destroy_session()
 
 
 def main() -> None:
