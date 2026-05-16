@@ -16,6 +16,10 @@ tests/
 pahe_batcher.db
 pahe_batcher.db-wal
 pahe_batcher.db-shm
+.pahe_staging_*.db
+.pahe_staging_*.db-wal
+.pahe_staging_*.db-shm
+pahe_vault.db
 downloads/
 pb_*.ts
 
