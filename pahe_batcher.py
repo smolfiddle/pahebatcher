@@ -2227,9 +2227,14 @@ async def _main_async(args: argparse.Namespace) -> None:
 
     # ── Startup Cleanup ───────────────────────────────────────────────────
     # Remove any orphaned staging DBs from crashed/interrupted previous runs.
+    # Only delete files older than 1 hour to avoid colliding with other instances.
+    now = time.time()
     for p in Path(".").glob(".pahe_staging_*.db*"):
-        with contextlib.suppress(OSError):
-            os.remove(p)
+        try:
+            if now - p.stat().st_mtime > 3600:
+                os.remove(p)
+        except OSError:
+            pass
 
     # ── Interactive Session Loop ──────────────────────────────────────────
     _noninteractive = args.yes or args.all or args.range or args.latest or args.export or args.stream
