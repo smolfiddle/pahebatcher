@@ -1862,11 +1862,15 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
         output_dir=output_dir, max_parallel=max_parallel, hls_workers=hls_workers,
         purge_db=purge_db, quality=quality, audio_lang=audio_lang,
     )
+
+    db_path = "pahe_vault.db" if not cfg.purge_db else f".pahe_staging_{os.getpid()}.db"
+
     console.print()
     console.print(Panel(
         f"  [dim]Output:[/dim]      {cfg.output_dir}\n"
         f"  [dim]Quality:[/dim]     [cyan]{cfg.quality}p[/cyan]\n"
         f"  [dim]Audio:[/dim]       [cyan]{'Subbed' if cfg.audio_lang == 'jpn' else 'Dubbed'}[/cyan]\n"
+        f"  [dim]Vault DB:[/dim]    [cyan]{db_path}[/cyan]\n"
         f"  [dim]Parallel:[/dim]    [cyan]{cfg.max_parallel}[/cyan] downloads  ·  "
         f"[cyan]{cfg.hls_workers}[/cyan] segment workers\n"
         f"  [dim]Temp DB:[/dim]     {'purged after finish' if cfg.purge_db else 'kept'}",
@@ -1936,20 +1940,6 @@ async def _run_batch(episodes: List[EpisodeInfo], cfg: DownloadConfig, db: Vault
         f"  [dim]Saved to:[/dim]  {cfg.output_dir}",
         border_style="green" if not fail else "yellow", box=box.ROUNDED,
     ))
-
-    # ── Database cleanup ──────────────────────────────────────────────────
-    db_path = db.db_path
-    await loop.run_in_executor(None, db.close)
-    if cfg.purge_db and os.path.exists(db_path):
-        try:
-            os.remove(db_path)
-            for suffix in ("-wal", "-shm"):
-                with contextlib.suppress(OSError):
-                    if os.path.exists(db_path + suffix):
-                        os.remove(db_path + suffix)
-            console.print("  [dim]Temp database cleaned up.[/dim]")
-        except OSError as exc:
-            console.print(f"  [yellow]⚠ Could not remove database:[/yellow] {exc}")
 
 
 async def _run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
@@ -2235,12 +2225,21 @@ async def _main_async(args: argparse.Namespace) -> None:
         console.print(table)
         return
 
+    # ── Startup Cleanup ───────────────────────────────────────────────────
+    # Remove any orphaned staging DBs from crashed/interrupted previous runs.
+    for p in Path(".").glob(".pahe_staging_*.db*"):
+        with contextlib.suppress(OSError):
+            os.remove(p)
+
     # ── Interactive Session Loop ──────────────────────────────────────────
     _noninteractive = args.yes or args.all or args.range or args.latest or args.export or args.stream
+    cached_cfg: Optional[DownloadConfig] = None
+    last_action: Optional[str] = None
     
     while True:
+        # ... (rest of the loop) ...
+        # (I will keep the loop logic as is but fix the DB handling)
         if _noninteractive:
-            # One-shot mode
             mode_choice = "2" if args.export else ("3" if args.stream else "1")
         else:
             console.print()
@@ -2249,12 +2248,15 @@ async def _main_async(args: argparse.Namespace) -> None:
                 "  [bold white]1[/bold white]  [cyan]Download Locally[/cyan]  [dim]· Save .mp4 files via internal engine[/dim]\n"
                 "  [bold white]2[/bold white]  [cyan]Export Links[/cyan]      [dim]· Get M3U8 URLs + Headers[/dim]\n"
                 "  [bold white]3[/bold white]  [cyan]Stream via MPV[/cyan]    [dim]· Watch episodes now[/dim]\n"
-                "  [bold white]4[/bold white]  [dim]List Episodes[/dim]     [dim]· Show the full episode table[/dim]\n"
+                "  [bold white]4[/bold white]  [cyan]List Episodes[/cyan]     [dim]· Show the full episode table[/dim]\n"
                 "  [bold white]5[/bold white]  [red]Exit[/red]",
                 title=f"[bold cyan]Action Selection — {anime.title}[/bold cyan]",
                 border_style="cyan", box=box.ROUNDED, padding=(0, 2),
             ))
-            mode_choice = Prompt.ask("  [cyan]Select action[/cyan]", choices=["1", "2", "3", "4", "5"], default="1")
+            
+            # Default to Exit (5) if we just did a batch action, else Download (1)
+            _default = "5" if last_action in ("1", "2") else "1"
+            mode_choice = Prompt.ask("  [cyan]Select action[/cyan]", choices=["1", "2", "3", "4", "5"], default=_default)
 
         if mode_choice == "5":
             break
@@ -2292,41 +2294,85 @@ async def _main_async(args: argparse.Namespace) -> None:
             if _noninteractive: break
             continue
 
+        # ── Configuration ─────────────────────────────────────────────────────
+        if _noninteractive:
+            safe_title = _sanitize_filename(anime.title)
+            series_dir = os.path.join(args.output, safe_title)
+            cfg = DownloadConfig(
+                output_dir   = series_dir,
+                max_parallel = args.parallel,
+                hls_workers  = args.workers,
+                purge_db     = args.purge_db,
+                quality      = args.quality,
+                export_mode  = (mode_choice == "2"),
+                stream_mode  = (mode_choice == "3"),
+                audio_lang   = args.audio_lang,
+            )
+        else:
+            # Re-confirm or use cached settings
+            if cached_cfg and (
+                (mode_choice == "1" and not cached_cfg.export_mode and not cached_cfg.stream_mode) or
+                (mode_choice == "2" and cached_cfg.export_mode) or
+                (mode_choice == "3" and cached_cfg.stream_mode)
+            ):
+                cfg = cached_cfg
+                console.print(f"  [dim]Reusing settings:[/dim] [cyan]{cfg.quality}p[/cyan] · "
+                              f"[cyan]{'Sub' if cfg.audio_lang == 'jpn' else 'Dub'}[/cyan] · "
+                              f"[cyan]{cfg.output_dir}[/cyan]")
+            else:
+                safe_title = _sanitize_filename(anime.title)
+                series_dir = os.path.join(args.output, safe_title)
+                defaults = DownloadConfig(
+                    output_dir   = series_dir,
+                    max_parallel = args.parallel,
+                    hls_workers  = args.workers,
+                    purge_db     = args.purge_db,
+                    quality      = args.quality,
+                    export_mode  = (mode_choice == "2"),
+                    stream_mode  = (mode_choice == "3"),
+                    audio_lang   = args.audio_lang,
+                )
+                if mode_choice == "3":
+                    cfg = DownloadConfig(quality=defaults.quality, stream_mode=True, audio_lang=defaults.audio_lang)
+                else:
+                    cfg = _wizard_config(defaults)
+                
+                if not cfg: continue
+                cached_cfg = cfg
+
         # ── Execution ─────────────────────────────────────────────────────────
-        safe_title = _sanitize_filename(anime.title)
-        series_dir = os.path.join(args.output, safe_title)
-        
-        cfg = DownloadConfig(
-            output_dir   = series_dir,
-            max_parallel = args.parallel,
-            hls_workers  = args.workers,
-            purge_db     = args.purge_db,
-            quality      = args.quality,
-            export_mode  = (mode_choice == "2"),
-            stream_mode  = (mode_choice == "3"),
-            audio_lang   = args.audio_lang,
-        )
-
-        if not _noninteractive and mode_choice != "3":
-            # Re-confirm settings if not streaming
-            cfg = _wizard_config(cfg)
-            if not cfg: continue
-
+        last_action = mode_choice
         if cfg.export_mode:
             await _run_export(chosen, cfg)
         elif cfg.stream_mode:
             await _run_stream(anime.title, chosen, cfg)
         else:
-            db_path = tempfile.mkstemp(suffix=".db", prefix="pahe_staging_")[1] if cfg.purge_db else "pahe_batcher.db"
+            # Make the .db visible for transparency
+            db_path = "pahe_vault.db" if not cfg.purge_db else f".pahe_staging_{os.getpid()}.db"
+            if _noninteractive:
+                console.print(f"  [dim]Vault DB:[/dim]      [cyan]{db_path}[/cyan]")
+            
             db = VaultDB(db_path)
             try:
                 await _run_batch(chosen, cfg, db)
             finally:
-                pass
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, db.close)
+                if cfg.purge_db and os.path.exists(db_path):
+                    try:
+                        os.remove(db_path)
+                        for suffix in ("-wal", "-shm"):
+                            with contextlib.suppress(OSError):
+                                if os.path.exists(db_path + suffix):
+                                    os.remove(db_path + suffix)
+                        console.print("  [dim]Temp database cleaned up.[/dim]")
+                    except OSError as exc:
+                        console.print(f"  [yellow]⚠ Could not remove database:[/yellow] {exc}")
 
         if _noninteractive:
             break
 
+    # Final cleanup before exit
     Solver.destroy_session()
 
 
