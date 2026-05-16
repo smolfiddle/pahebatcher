@@ -1377,7 +1377,9 @@ class Downloader:
                     self.cfg.quality, self.cfg.audio_lang,
                 )
                 if info.get("audio"):
-                    await loop.run_in_executor(None, self.mgr.update_status, asset_id, "downloading", audio=info["audio"])
+                    await loop.run_in_executor(
+                        None, partial(self.mgr.update_status, asset_id, "downloading", audio=info["audio"])
+                    )
 
                 await self._download_hls(asset_id, info)
 
@@ -2233,17 +2235,44 @@ async def _main_async(args: argparse.Namespace) -> None:
         console.print(table)
         return
 
-    # ── Interactive Loop ──────────────────────────────────────────────────
-    first_run = True
+    # ── Interactive Session Loop ──────────────────────────────────────────
+    _noninteractive = args.yes or args.all or args.range or args.latest or args.export or args.stream
+    
     while True:
-        if not first_run:
+        if _noninteractive:
+            # One-shot mode
+            mode_choice = "2" if args.export else ("3" if args.stream else "1")
+        else:
             console.print()
-            if not Confirm.ask("  [bold cyan]Perform another action on this series?[/bold cyan]", default=True):
-                break
-        first_run = False
+            console.print(Rule("[bold white] Step 2/3 — Action Selection [/bold white]", style="cyan"))
+            console.print(Panel(
+                "  [bold white]1[/bold white]  [cyan]Download Locally[/cyan]  [dim]· Save .mp4 files via internal engine[/dim]\n"
+                "  [bold white]2[/bold white]  [cyan]Export Links[/cyan]      [dim]· Get M3U8 URLs + Headers[/dim]\n"
+                "  [bold white]3[/bold white]  [cyan]Stream via MPV[/cyan]    [dim]· Watch episodes now[/dim]\n"
+                "  [bold white]4[/bold white]  [dim]List Episodes[/dim]     [dim]· Show the full episode table[/dim]\n"
+                "  [bold white]5[/bold white]  [red]Exit[/red]",
+                title=f"[bold cyan]Action Selection — {anime.title}[/bold cyan]",
+                border_style="cyan", box=box.ROUNDED, padding=(0, 2),
+            ))
+            mode_choice = Prompt.ask("  [cyan]Select action[/cyan]", choices=["1", "2", "3", "4", "5"], default="1")
+
+        if mode_choice == "5":
+            break
+
+        if mode_choice == "4":
+            table = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
+            table.add_column("Ep",    width=6,  justify="right")
+            table.add_column("Title", style="white")
+            table.add_column("Audio", width=5)
+            for ep in anime.episodes:
+                audio = _audio_display(ep.audio)
+                table.add_row(ep.ep_str, ep.title or "—", audio)
+            console.print(table)
+            continue
 
         # ── Episode selection ─────────────────────────────────────────────────
-        console.print(Rule("[bold white] Step 2/3 — Select Episodes [/bold white]", style="cyan"))
+        if not _noninteractive:
+            console.print(Rule("[bold white] Step 3/3 — Select Episodes [/bold white]", style="cyan"))
 
         if args.all:
             chosen = noninteractive_episodes(anime, "all")
@@ -2252,80 +2281,48 @@ async def _main_async(args: argparse.Namespace) -> None:
             if not chosen:
                 console.print(f"  [red]✗ No episodes matched range:[/red] {args.range}")
                 console.print(f"    Available numbers: [cyan]{available_range}[/cyan]")
-                sys.exit(1)
+                if _noninteractive: sys.exit(1)
+                continue
         elif args.latest:
             chosen = noninteractive_episodes(anime, "latest", latest_n=args.latest)
         else:
             chosen = select_episodes(anime)
 
         if not chosen:
-            if args.all or args.range or args.latest:
-                sys.exit(0)
+            if _noninteractive: break
             continue
 
-        # ── Confirm queue ─────────────────────────────────────────────────────
-        ep_summary = _compact_ep_list(chosen)
-        console.print()
-        console.print(Panel(
-            f"  Series:   [bold white]{anime.title}[/bold white]\n"
-            f"  Episodes: [cyan]{ep_summary}[/cyan]  ([bold]{len(chosen)}[/bold] total)",
-            title="[green]Download Queue[/green]", border_style="green", box=box.ROUNDED,
-        ))
-
-        _noninteractive = args.yes or args.all or args.range or args.latest or args.export or args.stream
-        if not _noninteractive:
-            if not Confirm.ask("  [bold cyan]Proceed?[/bold cyan]", default=True):
-                continue
-
-        # ── Configure ─────────────────────────────────────────────────────────
-        console.print(Rule("[bold white] Step 3/3 — Configure & Action [/bold white]", style="cyan"))
-
+        # ── Execution ─────────────────────────────────────────────────────────
         safe_title = _sanitize_filename(anime.title)
         series_dir = os.path.join(args.output, safe_title)
-
-        defaults = DownloadConfig(
+        
+        cfg = DownloadConfig(
             output_dir   = series_dir,
             max_parallel = args.parallel,
             hls_workers  = args.workers,
             purge_db     = args.purge_db,
             quality      = args.quality,
-            export_mode  = args.export,
-            stream_mode  = args.stream,
+            export_mode  = (mode_choice == "2"),
+            stream_mode  = (mode_choice == "3"),
             audio_lang   = args.audio_lang,
         )
 
-        if _noninteractive:
-            cfg = defaults
-            Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
-            console.print(Panel(
-                f"  [dim]Output:[/dim]      {cfg.output_dir}\n"
-                f"  [dim]Quality:[/dim]     [cyan]{cfg.quality}p[/cyan]\n"
-                f"  [dim]Audio:[/dim]       [cyan]{'Subbed' if cfg.audio_lang == 'jpn' else 'Dubbed'}[/cyan]\n"
-                f"  [dim]Parallel:[/dim]    [cyan]{cfg.max_parallel}[/cyan] downloads  ·  "
-                f"[cyan]{cfg.hls_workers}[/cyan] segment workers\n"
-                f"  [dim]Temp DB:[/dim]     {'purged after finish' if cfg.purge_db else 'kept'}",
-                title="[bold green]✓ Ready[/bold green]", border_style="green", box=box.ROUNDED,
-            ))
-        else:
-            cfg = _wizard_config(defaults)
+        if not _noninteractive and mode_choice != "3":
+            # Re-confirm settings if not streaming
+            cfg = _wizard_config(cfg)
+            if not cfg: continue
 
-        # ── Export / Stream / Download ────────────────────────────────────────
         if cfg.export_mode:
             await _run_export(chosen, cfg)
         elif cfg.stream_mode:
             await _run_stream(anime.title, chosen, cfg)
         else:
-            if cfg.purge_db:
-                fd, db_path = tempfile.mkstemp(suffix=".db", prefix="pahe_staging_")
-                os.close(fd)
-            else:
-                db_path = "pahe_batcher.db"
-
+            db_path = tempfile.mkstemp(suffix=".db", prefix="pahe_staging_")[1] if cfg.purge_db else "pahe_batcher.db"
             db = VaultDB(db_path)
             try:
                 await _run_batch(chosen, cfg, db)
             finally:
-                pass # cleanup handled inside _run_batch
+                pass
 
         if _noninteractive:
             break
