@@ -33,6 +33,96 @@ Built with a modern asynchronous multi‑queue pipeline, a blazing‑fast HLS en
 
 ---
 
+## 📚 Usage Guide — Step by Step
+
+### ① Launch the Wizard
+
+Just pass an AnimePahe series URL (the one that looks like `https://animepahe.pw/anime/<uuid>`).
+The tool checks that FlareSolverr is reachable, scans the series metadata, and shows an episode list with sub/dub counts.
+If you’ve previously downloaded part of this series, you’ll see a `[PARTIAL DOWNLOAD FOUND]` badge and later the download will resume automatically.
+
+### ② Choose an Action
+
+After scanning, you’ll be greeted by the interactive action menu:
+
+|  Key  | Action               | Description                                                                                     |
+| :---: | :------------------- | :---------------------------------------------------------------------------------------------- |
+| **1** | **Download**         | Batch‑download selected episodes as `.mp4` files.                                               |
+| **2** | **Export**           | Save M3U8 links and authentication headers to a file for external downloaders.                  |
+| **3** | **Stream**           | Watch episodes immediately via MPV with a live “Now Playing” panel.                             |
+| **4** | **Sessions & Cache** | Browse, resume, or delete previous download sessions. Also cleans legacy `v1.x` database files. |
+| **5** | **List**             | Display all episodes in a table (episode number, title, audio type).                            |
+| **6** | **Exit**             | Quit the program.                                                                               |
+
+_Pro tip:_ If you run the tool again on the same URL, your last‑used settings (quality, audio, output folder) are remembered and presented as defaults.
+
+### ③ Select Episodes
+
+Whether you pick **Download**, **Export**, or **Stream**, you’ll next select which episodes to process. Several modes are available:
+
+- **A (All)** – Select every episode.
+- **R (Range)** – Type a range like `1-12`, `1,4,7`, or `13-`.
+- **L (Toggle)** – Interactive checklist; toggle individual episodes by number, then type `done`.
+- **N (Latest N)** – Grab the most recent N episodes only.
+
+The episode table shows sub (JPN) vs. dub (DUB) badges, so you always know what you’re selecting.
+
+### ④ Configure Your Download/Stream Settings
+
+An interactive wizard steps you through:
+
+1. **Quality** – `360p`, `720p`, or `1080p` (default: `1080p`).
+2. **Audio Language** – `Subbed` (Japanese original) or `Dubbed` (English). The tool auto‑detects and filters available streams on AnimePahe’s play page.
+3. **Output directory** – Where your `.mp4` files will be saved (default: `./downloads/<series_name>`).
+4. **Concurrency** – How many episodes to download in parallel (1‑6, default 2) and how many HLS segment workers per episode (8‑32, default 24).
+
+Settings are reused when switching between download/export/stream actions during the same session, so you don’t have to re‑enter them.
+
+### ⑤ Pre‑download Confirmation (Download Only)
+
+Before the heavy lifting begins, you’ll see a summary panel that includes:
+
+- Episode list and total count.
+- Audio breakdown (e.g., `7 JPN, 0 DUB`).
+- Estimated total size (based on a per‑episode quality estimate).
+- Number of segments that will be reused from a previous partial download, if any.
+
+Confirm with `y` (or `n` to go back and adjust selections) – and the downloads begin.
+
+### ⑥ Monitoring Progress
+
+The **Unified Dashboard** shows one row per episode, with columns for:
+
+- Episode title.
+- Progress bar (driven by segment count, so the percentage is accurate from the start).
+- Segment counter (e.g., `150/200`).
+- Real‑time transfer speed and ETA.
+- Current file size.
+
+Episodes transition through states: _resolving_ → _queued_ → _downloading_ → _remuxing_ → _done_. Failed episodes are clearly marked with a red `✗`.
+
+### ⑦ Playback Controls (Stream Mode)
+
+When streaming, after an episode finishes (close MPV), an interactive menu appears:
+
+- **N** – Next episode.
+- **P** – Previous episode.
+- **R** – Replay current.
+- **S** – Select a specific episode from a list.
+- **Q** – Quit streaming.
+
+### ⑧ Session & Cache Management (Action 4)
+
+Opens a dedicated TUI that lists all previous download sessions stored in the `pahe_cache/` folder. For each session you can:
+
+- **Resume** – Re‑scan the series and continue downloading unfinished episodes (completed segments are automatically skipped).
+- **Delete** – Remove a session’s cached data to free disk space.
+- **Clean Legacy** – Remove obsolete `.db` files from v1.x versions.
+
+This turns pahebatcher into a persistent download manager, not just a one‑shot script.
+
+---
+
 ## ✨ Features
 
 ### 📺 Action Modes
@@ -115,4 +205,4 @@ This tool is intended for personal and educational use. Downloading copyrighted 
 
 ## 📄 License
 
-MIT License. See [LICENSE](LICENSE) for details
+MIT License. See [LICENSE](LICENSE) for details.
