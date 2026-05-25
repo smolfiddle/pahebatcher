@@ -1240,26 +1240,28 @@ class BatchDownloader:
             while not resolve_queue.empty():
                 raw_ep = await resolve_queue.get()
 
-        # 1. Selection: for each episode number, find the variant that matches cfg.audio_lang.
-                # If the preferred audio isn't available, we fallback to the first available variant.
+                # 1. Selection: find variant that matches cfg.audio_lang.
                 variants = self.anime.get_all_variants(raw_ep.number)
                 ep = self.anime.get_variant(raw_ep.number, self.cfg.audio_lang) or variants[0]
+                if ep.audio != self.cfg.audio_lang:
+                    log.warning("Preferred audio %s not found for Ep %s, falling back to %s", self.cfg.audio_lang, raw_ep.number, ep.audio)
+                    dash.mark_done(raw_ep.session, f"Ep {raw_ep.ep_str} — {ep.audio.upper()} fallback")
 
                 # 2. Failover: check if already downloaded
                 existing = await loop.run_in_executor(None, self._find_existing, ep)
-                ...
+
                 if existing:
                     self._results[ep.session] = existing
                     # Title extraction
                     title = ep.title
-                    if not title or title == "?":
+                    if not title or title == '?':
                         with contextlib.suppress(Exception):
                             t = existing.stem
-                            for sep in (" - ", "_-_"):
+                            for sep in (' - ', '_-_'):
                                 if sep in t:
                                     t = t.split(sep, 1)[-1]
                                     break
-                            title = t.replace("_", " ").strip()
+                            title = t.replace('_', ' ').strip()
 
                     dash.add_ep(ep.session, f"Ep {ep.ep_str} — {title or 'Already exists'}")
                     dash.mark_done(ep.session, f"Ep {ep.ep_str} (already exists)")
@@ -1271,7 +1273,6 @@ class BatchDownloader:
                 dash.mark_resolving(ep.session, label)
 
                 try:
-                    # ADDED TIMEOUT: 120 seconds for resolution
                     info = await asyncio.wait_for(
                         loop.run_in_executor(
                             None, extract_stream, ep.play_url,
@@ -1279,7 +1280,7 @@ class BatchDownloader:
                         ),
                         timeout=120.0
                     )
-                    if info.title and (not ep.title or ep.title == "?"):
+                    if info.title and (not ep.title or ep.title == '?'):
                         ep.title = info.title
 
                     real_label = f"Ep {ep.ep_str} — {ep.title or f'Episode {ep.ep_str}'}"
@@ -1297,10 +1298,10 @@ class BatchDownloader:
 
                 resolve_queue.task_done()
 
-                # Sentinels for download workers
-                for _ in range(self.cfg.max_parallel):
-                    await download_queue.put(None)
-                    # ── Stage 2: Download workers ─────────────────────────────────────
+            # Sentinels for download workers
+            for _ in range(self.cfg.max_parallel):
+                await download_queue.put(None)
+            # ── Stage 2: Download workers ─────────────────────────────────────
 
         async def download_worker() -> None:
             ep_dl = EpisodeDownloader(
@@ -1310,16 +1311,16 @@ class BatchDownloader:
             while True:
                 item = await download_queue.get()
                 if item is None:
-                    download_queue.task_done()
-                    return
+                    break
+                return
                 ep, info = item
                 path = await ep_dl.run(ep, info)
                 self._results[ep.session] = path
                 download_queue.task_done()
 
-        # ── Run pipeline ──────────────────────────────────────────────────
+                # ── Run pipeline ──────────────────────────────────────────────────
 
-        dash.start()
+                dash.start()
         try:
             # We use 1 resolver worker (FlareSolverr is serial) but multiple downloaders
             tasks = [asyncio.create_task(resolver())]
@@ -1947,6 +1948,8 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
         if has_other:
             other_label = "DUB" if other_audio == "eng" else "SUB"
             audio_info += f" [dim]([cyan]{other_label} available[/cyan])[/dim]"
+        else:
+            audio_info += f" [dim]([red]no {other_label} variant[/red])[/dim]"
 
         if state == "playing":
             content = Group(
@@ -1974,7 +1977,6 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
             title=title,
             border_style=border, box=box.ROUNDED, padding=(1, 2),
         )
-
     while 0 <= idx < len(all_eps):
         ep = all_eps[idx]
         try:
@@ -2365,17 +2367,11 @@ async def _main(args: argparse.Namespace) -> None:
         console.print(f"\n  [red]✗ Scan failed:[/red] {exc}")
         sys.exit(1)
 
-    sub_n = sum(1 for ep in anime.episodes if ep.audio == "jpn")
-    dub_n = len(anime.episodes) - sub_n
-    audio_info = (
-        f"{sub_n} JPN, {dub_n} DUB" if dub_n else "JPN audio"
-    )
     badge = " [bold yellow][PARTIAL DOWNLOAD FOUND][/bold yellow]" if anime.has_session else ""
     console.print(
         f"  [green]✓[/green] [bold]{anime.title}[/bold]{badge}\n"
         f"  — [cyan]{len(anime.episodes)}[/cyan] episodes  "
-        f"({compact_ep_range(anime.episodes)})  "
-        f"[dim]{audio_info}[/dim]"
+        f"({compact_ep_range(anime.episodes)})"
     )
 
     if args.list_only:
