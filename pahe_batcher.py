@@ -83,7 +83,7 @@ console = Console()
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────
 
-VERSION          = "2.1.0"
+VERSION          = "2.2.0"
 HLS_WORKERS      = 24          # parallel segment fetches per episode
 RETRY_ATTEMPTS   = 5
 RETRY_BASE_DELAY = 0.5
@@ -1389,12 +1389,25 @@ def parse_anime_url(url: str) -> Tuple[str, str]:
 class AnimePaheScanner:
     @classmethod
     def search(cls, host: str, query: str) -> List[Dict[str, Any]]:
-        """Search AnimePahe for a title and return results."""
-        url = f"https://{host}/api?m=search&q={urllib.parse.quote(query)}"
-        data = Solver.fetch_json(url)
-        if data is None:
-            return []
-        return data.get("data", [])
+        """Search AnimePahe for a title and return results. Tries multiple hosts on failure."""
+        hosts = [host, "animepahe.pw", "animepahe.com", "animepahe.org"]
+        # Remove duplicates while preserving order
+        hosts = list(dict.fromkeys(hosts))
+        
+        for h in hosts:
+            url = f"https://{h}/api?m=search&q={urllib.parse.quote(query)}"
+            try:
+                data = Solver.fetch_json(url)
+                if data and "data" in data:
+                    # Update host to the one that worked for future links
+                    cls._current_host = h
+                    return data.get("data", [])
+            except Exception as exc:
+                log.debug("Search failed on %s: %s", h, exc)
+                continue
+        return []
+
+    _current_host: str = "animepahe.com"
 
     def __init__(self, host: str, session: str) -> None:
         self.host    = host
@@ -1685,7 +1698,8 @@ def interactive_discovery(host: str) -> Optional[str]:
                 target = results[idx-1]
                 session = target.get("session")
                 if session:
-                    return f"https://{host}/anime/{session}"
+                    # Use the host that actually worked for search
+                    return f"https://{AnimePaheScanner._current_host}/anime/{session}"
                     
         console.print("  [red]⚠ Invalid selection.[/red]")
 
@@ -2225,7 +2239,7 @@ async def _main(args: argparse.Namespace) -> None:
     url = args.url
     if not url:
         # Default host if none provided via URL
-        url = interactive_discovery("animepahe.ru")
+        url = interactive_discovery("animepahe.com")
         if not url:
             console.print("\n  [yellow]No anime selected. Exiting.[/yellow]")
             return
