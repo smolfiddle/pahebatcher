@@ -1491,22 +1491,30 @@ class AnimePaheScanner:
 
     @classmethod
     def discover_all_sessions(cls, host: str, session: str) -> List[str]:
-        """Scrape landing page for unique variant session IDs."""
+        """Scrape landing page for unique variant session IDs, excluding duplicates."""
         url = f"https://{host}/anime/{session}"
         result = Solver.fetch_html(url)
         if not result:
             return [session]
         html, _ = result
         
-        # Capture links explicitly in the form /anime/<session>
-        # Filter to only those that are session UUIDs
-        links = re.findall(r'href=["\']/anime/([0-9a-f-]{36})["\']', html)
+        # Look specifically for links that look like sub/dub toggles
+        # These are usually in buttons or specific container structures
+        # We'll use a set to automatically handle deduplication
+        found_sessions = {session}
         
-        # Also catch data-session if they appear in standard buttons
-        data_sessions = re.findall(r'data-session=["\']([0-9a-f-]{36})["\']', html)
-        
-        # Return unique list including the original session
-        return list(dict.fromkeys([session] + links + data_sessions))
+        # 1. Look for explicit session-bearing links
+        for m in re.finditer(r'href=["\']/anime/([0-9a-f-]{36})["\']', html):
+            found_sessions.add(m.group(1))
+            
+        # 2. Look for data-session attributes (often used in language toggle buttons)
+        for m in re.finditer(r'data-session=["\']([0-9a-f-]{36})["\']', html):
+            found_sessions.add(m.group(1))
+            
+        # Filter: If multiple sessions are discovered, ensure they are actually different
+        # We return the list, ensuring our starting session is first
+        unique = [session] + [s for s in found_sessions if s != session]
+        return unique
 
     def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
         console.print("  [dim]Discovering all variants …[/dim]", end="\r")
