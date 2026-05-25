@@ -1867,11 +1867,12 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
                 choices_ui = "  ·  ".join(ui_options)
                 live.update(render_play_panel(ep, "ended", choices_ui))
 
-                default = "n" if idx < len(episodes) - 1 else "q"
-                choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
-                all_choices = valid_choices + [c.upper() for c in valid_choices]
-                
-                choice = Prompt.ask(choice_label, choices=all_choices, default=default, show_choices=False).lower()
+            # Prompt is now OUTSIDE the Live context to prevent duplication
+            default = "n" if idx < len(episodes) - 1 else "q"
+            choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
+            all_choices = valid_choices + [c.upper() for c in valid_choices]
+            
+            choice = Prompt.ask(choice_label, choices=all_choices, default=default, show_choices=False).lower()
 
             if choice == "n":   idx += 1
             elif choice == "p": idx -= 1
