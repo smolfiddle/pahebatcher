@@ -1491,23 +1491,27 @@ class AnimePaheScanner:
 
     @classmethod
     def discover_all_sessions(cls, host: str, session: str) -> List[str]:
-        """Scrape landing page for unique variant session IDs, from all relevant links."""
-        url = f"https://{host}/anime/{session}"
-        result = Solver.fetch_html(url)
-        if not result:
+        """Query the release API for the anime title to find all variant session IDs."""
+        # Fetch the metadata for the series using the provided session UUID
+        url = f"https://{host}/api?m=release&id={session}&sort=episode_asc&page=1"
+        data = Solver.fetch_json(url)
+        if not data or "anime" not in data:
             return [session]
-        html, _ = result
-        
-        # Look for valid 36-char session IDs in /anime/ URLs
-        found_sessions = {session}
-        links = re.findall(r'href=["\']/anime/([0-9a-f-]{36})["\']', html)
-        found_sessions.update(links)
-        
-        # Also catch data-session if they appear in standard buttons
-        data_sessions = re.findall(r'data-session=["\']([0-9a-f-]{36})["\']', html)
-        found_sessions.update(data_sessions)
             
-        return list(found_sessions)
+        # Extract the 'anime' object to get the title
+        anime_data = data["anime"]
+        title = anime_data.get("title", "")
+        
+        # Search for this title to find all variants (Sub/Dub)
+        search_results = cls.search(host, title)
+        
+        # Collect unique session IDs from the search results
+        sessions = {session}
+        for res in search_results:
+            if "session" in res:
+                sessions.add(res["session"])
+                
+        return list(sessions)
 
     def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
         console.print("  [dim]Discovering all variants …[/dim]", end="\r")
