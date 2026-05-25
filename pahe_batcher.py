@@ -613,17 +613,49 @@ def _extract_m3u8(html: str) -> Optional[str]:
 
 
 def _resolve_kwik(url: str) -> Optional[StreamInfo]:
-    sol = Solver.request(url, cache=False)
-    if not sol:
-        return None
-    html       = sol.get("response", "")
-    cookies    = sol.get("cookies", [])
-    user_agent = sol.get("userAgent", "Mozilla/5.0")
-    direct     = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
-    video_url  = direct.group(1) if direct else _extract_m3u8(html)
-    if video_url:
-        return StreamInfo(url=video_url, cookies=cookies,
-                          user_agent=user_agent, referer=url)
+    """
+    Directly fetch Kwik page using urllib with Referer to bypass Cloudflare.
+    FlareSolverr is often blocked on Kwik, but direct requests with a Referer usually work.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://animepahe.com/",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            html = r.read().decode("utf-8", errors="replace")
+            # Extract cookies if any (though usually not needed for the m3u8 itself)
+            cookies = []
+            if cookie_hdr := r.headers.get("Set-Cookie"):
+                # Simple cookie parser for Kwik
+                for part in cookie_hdr.split(","):
+                    if "=" in part:
+                        name_val = part.split(";")[0].strip()
+                        if "=" in name_val:
+                            n, v = name_val.split("=", 1)
+                            cookies.append({"name": n, "value": v})
+            
+            user_agent = headers["User-Agent"]
+            direct     = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
+            video_url  = direct.group(1) if direct else _extract_m3u8(html)
+            if video_url:
+                return StreamInfo(url=video_url, cookies=cookies,
+                                  user_agent=user_agent, referer=url)
+    except Exception as exc:
+        log.debug("Direct Kwik resolve failed: %s", exc)
+        # Fallback to Solver if direct fails
+        sol = Solver.request(url, cache=False)
+        if not sol:
+            return None
+        html       = sol.get("response", "")
+        cookies    = sol.get("cookies", [])
+        user_agent = sol.get("userAgent", "Mozilla/5.0")
+        direct     = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
+        video_url  = direct.group(1) if direct else _extract_m3u8(html)
+        if video_url:
+            return StreamInfo(url=video_url, cookies=cookies,
+                              user_agent=user_agent, referer=url)
     return None
 
 
