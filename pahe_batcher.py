@@ -1241,13 +1241,13 @@ class BatchDownloader:
                 raw_ep = await resolve_queue.get()
 
         # 1. Selection: for each episode number, find the variant that matches cfg.audio_lang.
-        # If the preferred audio isn't available, we fallback to the first available variant.
-        variants = self.anime.get_all_variants(raw_ep.number)
-        ep = self.anime.get_variant(raw_ep.number, self.cfg.audio_lang) or variants[0]
+                # If the preferred audio isn't available, we fallback to the first available variant.
+                variants = self.anime.get_all_variants(raw_ep.number)
+                ep = self.anime.get_variant(raw_ep.number, self.cfg.audio_lang) or variants[0]
 
-        # 2. Failover: check if already downloaded
-        existing = await loop.run_in_executor(None, self._find_existing, ep)
-...
+                # 2. Failover: check if already downloaded
+                existing = await loop.run_in_executor(None, self._find_existing, ep)
+                ...
                 if existing:
                     self._results[ep.session] = existing
                     # Title extraction
@@ -1297,10 +1297,10 @@ class BatchDownloader:
 
                 resolve_queue.task_done()
 
-            # Sentinels for download workers
-            for _ in range(self.cfg.max_parallel):
-                await download_queue.put(None)
-        # ── Stage 2: Download workers ─────────────────────────────────────
+                # Sentinels for download workers
+                for _ in range(self.cfg.max_parallel):
+                    await download_queue.put(None)
+                    # ── Stage 2: Download workers ─────────────────────────────────────
 
         async def download_worker() -> None:
             ep_dl = EpisodeDownloader(
