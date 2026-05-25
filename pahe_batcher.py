@@ -1749,7 +1749,7 @@ async def run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
 # 17.  STREAM MODE  (MPV playback)
 # ═════════════════════════════════════════════════════════════════════════
 
-async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
+async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
     if not shutil.which("mpv"):
         console.print("\n  [red]✗ MPV not found![/red]")
         console.print("  [dim]Install MPV from https://mpv.io and ensure it is in your PATH.[/dim]")
@@ -1759,14 +1759,23 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
     console.print(Rule("[bold white] Streaming via MPV [/bold white]", style="cyan"))
 
     loop = asyncio.get_event_loop()
-    idx  = 0
+    all_eps = anime.episodes
+    
+    # Find starting index based on the first chosen episode
+    idx = 0
+    if chosen_episodes:
+        first_sess = chosen_episodes[0].session
+        for i, e in enumerate(all_eps):
+            if e.session == first_sess:
+                idx = i
+                break
     
     def render_play_panel(ep: EpisodeInfo, state: str = "playing", choices_str: str = "") -> Panel:
         if state == "playing":
             content = Group(
-                Text(anime_title, style="bold cyan underline"),
+                Text(anime.title, style="bold cyan underline"),
                 Text.from_markup(f"Now Playing: {ep.label}", style="bold green"),
-                Text(f"Quality: {cfg.quality}p  ·  {idx + 1}/{len(episodes)}", style="dim"),
+                Text(f"Quality: {cfg.quality}p  ·  Episode {idx + 1} of {len(all_eps)}", style="dim"),
                 Rule(style="dim", characters="─"),
                 Text("Close MPV window to return to controls", style="italic cyan"),
             )
@@ -1774,7 +1783,7 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             border = "green"
         else:
             content = Group(
-                Text(anime_title, style="bold cyan underline"),
+                Text(anime.title, style="bold cyan underline"),
                 Text.from_markup(f"Finished: {ep.label}", style="dim"),
                 Rule(style="dim", characters="─"),
                 Text(choices_str, style="bold white"),
@@ -1788,12 +1797,12 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             border_style=border, box=box.ROUNDED, padding=(1, 2),
         )
 
-    while 0 <= idx < len(episodes):
-        ep = episodes[idx]
+    while 0 <= idx < len(all_eps):
+        ep = all_eps[idx]
         try:
             with Progress(
                 SpinnerColumn(),
-                TextColumn(f"[bold white]({idx + 1}/{len(episodes)}) Resolving Ep {ep.ep_str}…"),
+                TextColumn(f"[bold white]({idx + 1}/{len(all_eps)}) Resolving Ep {ep.ep_str}…"),
                 console=console, transient=True,
             ) as prog:
                 prog.add_task("", total=None)
@@ -1808,7 +1817,6 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             # Aggressive title cleaning
             if info.title and (not ep.title or "animepahe" in ep.title.lower() or "?" in ep.title):
                 t = info.title
-                # Remove common suffixes and site branding
                 t = re.sub(r"\s*[|·].*$", "", t).strip()
                 t = re.sub(r"^Watch\s+.*?Episode\s+\d+.*", "", t, flags=re.I).strip()
                 t = re.sub(r"\(1080p|720p|360p\).*", "", t, flags=re.I).strip()
@@ -1838,13 +1846,7 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                _, stderr = await proc.communicate()
-                
-                if proc.returncode != 0 and stderr:
-                    err = stderr.decode().strip()
-                    if "failed" in err.lower() or "error" in err.lower():
-                        live.stop()
-                        console.print(f"  [red]✗ MPV error:[/red] {err[:200]}")
+                await proc.communicate()
 
                 # Build playback controls
                 valid_choices = ["r", "s", "q"]
@@ -1856,7 +1858,7 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
                     prompt_parts.append("[bold](P)[/bold]rev")
                     ui_options.append("[cyan]P[/cyan]rev")
 
-                if idx < len(episodes) - 1:
+                if idx < len(all_eps) - 1:
                     valid_choices.insert(0, "n")
                     prompt_parts.append("[bold](N)[/bold]ext")
                     ui_options.append("[green]N[/green]ext")
@@ -1867,8 +1869,7 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
                 choices_ui = "  ·  ".join(ui_options)
                 live.update(render_play_panel(ep, "ended", choices_ui))
 
-            # Prompt is now OUTSIDE the Live context to prevent duplication
-            default = "n" if idx < len(episodes) - 1 else "q"
+            default = "n" if idx < len(all_eps) - 1 else "q"
             choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
             all_choices = valid_choices + [c.upper() for c in valid_choices]
             
@@ -1881,19 +1882,19 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             elif choice == "s":
                 console.print()
                 sel = Table(box=box.ROUNDED, header_style="bold cyan",
-                            title=f"[bold white]Select Episode — {anime_title}[/bold white]")
+                            title=f"[bold white]Select Episode — {anime.title}[/bold white]")
                 sel.add_column("#",     justify="right", style="dim", width=4)
                 sel.add_column("Ep",    justify="right", width=6)
                 sel.add_column("Title", ratio=1)
                 
-                for i, e in enumerate(episodes):
-                    style = "bold green" if i == idx else "dim" if i != idx else ""
+                for i, e in enumerate(all_eps):
+                    style = "bold green" if i == idx else "dim"
                     pointer = "→ " if i == idx else "  "
                     sel.add_row(f"{pointer}{i+1}", e.ep_str, e.title or "—", style=style)
                 
                 console.print(sel)
-                num = IntPrompt.ask(f"  [cyan]Jump to # (1-{len(episodes)})[/cyan]", default=idx + 1)
-                idx = max(0, min(num - 1, len(episodes) - 1))
+                num = IntPrompt.ask(f"  [cyan]Jump to # (1-{len(all_eps)})[/cyan]", default=idx + 1)
+                idx = max(0, min(num - 1, len(all_eps) - 1))
 
         except KeyboardInterrupt:
             break
@@ -2304,7 +2305,7 @@ async def _main(args: argparse.Namespace) -> None:
             break
 
         elif mode == "stream":
-            await run_stream(anime.title, chosen, cfg)
+            await run_stream(anime, chosen, cfg)
             if _scripted:
                 break
 
