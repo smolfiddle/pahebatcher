@@ -1760,6 +1760,34 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
 
     loop = asyncio.get_event_loop()
     idx  = 0
+    
+    def render_play_panel(ep: EpisodeInfo, state: str = "playing", choices_str: str = "") -> Panel:
+        if state == "playing":
+            content = Group(
+                Text(anime_title, style="bold cyan underline"),
+                Text.from_markup(f"Now Playing: {ep.label}", style="bold green"),
+                Text(f"Quality: {cfg.quality}p  ·  {idx + 1}/{len(episodes)}", style="dim"),
+                Rule(style="dim", characters="─"),
+                Text("Close MPV window to return to controls", style="italic cyan"),
+            )
+            title = "[bold cyan]Live Playback[/bold cyan]"
+            border = "green"
+        else:
+            content = Group(
+                Text(anime_title, style="bold cyan underline"),
+                Text.from_markup(f"Finished: {ep.label}", style="dim"),
+                Rule(style="dim", characters="─"),
+                Text(choices_str, style="bold white"),
+            )
+            title = "[bold yellow]Playback Ended[/bold yellow]"
+            border = "yellow"
+            
+        return Panel(
+            Align.center(content),
+            title=title,
+            border_style=border, box=box.ROUNDED, padding=(1, 2),
+        )
+
     while 0 <= idx < len(episodes):
         ep = episodes[idx]
         try:
@@ -1776,9 +1804,17 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             # Update episode metadata from stream page
             if info.audio:  ep.audio  = info.audio
             if info.fansub: ep.fansub = info.fansub
-            if info.title and (not ep.title or "animepahe" in ep.title.lower()):
-                t = re.sub(r"\s*[|·].*$", "", info.title).strip()
+            
+            # Aggressive title cleaning
+            if info.title and (not ep.title or "animepahe" in ep.title.lower() or "?" in ep.title):
+                t = info.title
+                # Remove common suffixes and site branding
+                t = re.sub(r"\s*[|·].*$", "", t).strip()
                 t = re.sub(r"^Watch\s+.*?Episode\s+\d+.*", "", t, flags=re.I).strip()
+                t = re.sub(r"\(1080p|720p|360p\).*", "", t, flags=re.I).strip()
+                t = re.sub(r"\[SubsPlease\].*", "", t, flags=re.I).strip()
+                t = re.sub(r"AnimePahe_", "", t, flags=re.I).strip()
+                t = t.replace("_", " ").strip()
                 if ep.audio == "jpn":
                     t = re.sub(r"\s+DUB\s*$", "", t, flags=re.I).strip()
                 if t:
@@ -1796,88 +1832,66 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
                 info.url,
             ]
 
-            play_panel = Panel(
-                Align.center(Group(
-                    Text(anime_title, style="bold cyan underline"),
-                    Text.from_markup(f"Now Playing: {ep.label}", style="bold green"),
-                    Text(f"Quality: {cfg.quality}p  ·  {idx + 1}/{len(episodes)}", style="dim"),
-                    Rule(style="dim", characters="─"),
-                    Text("Close MPV window to return to controls", style="italic cyan"),
-                )),
-                title="[bold cyan]Live Playback[/bold cyan]",
-                border_style="green", box=box.ROUNDED, padding=(1, 2),
-            )
-
-            with Live(play_panel, console=console, refresh_per_second=4) as live:
+            with Live(render_play_panel(ep, "playing"), console=console, refresh_per_second=4) as live:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 _, stderr = await proc.communicate()
+                
                 if proc.returncode != 0 and stderr:
                     err = stderr.decode().strip()
                     if "failed" in err.lower() or "error" in err.lower():
                         live.stop()
                         console.print(f"  [red]✗ MPV error:[/red] {err[:200]}")
 
-            # Playback controls
-            console.print()
-            options: List[str] = []
-            valid_choices = ["r", "s", "q"]
-            prompt_parts = []
+                # Build playback controls
+                valid_choices = ["r", "s", "q"]
+                prompt_parts = []
+                ui_options = []
 
-            if idx > 0:
-                options.append("[bold cyan][P][/bold cyan] Previous")
-                valid_choices.insert(0, "p")
-                prompt_parts.append("[bold](P)[/bold]rev")
+                if idx > 0:
+                    valid_choices.insert(0, "p")
+                    prompt_parts.append("[bold](P)[/bold]rev")
+                    ui_options.append("[cyan]P[/cyan]rev")
 
-            if idx < len(episodes) - 1:
-                options.append("[bold green][N][/bold green] Next")
-                valid_choices.insert(0, "n")
-                prompt_parts.append("[bold](N)[/bold]ext")
+                if idx < len(episodes) - 1:
+                    valid_choices.insert(0, "n")
+                    prompt_parts.append("[bold](N)[/bold]ext")
+                    ui_options.append("[green]N[/green]ext")
 
-            options += [
-                "[bold yellow][R][/bold yellow] Replay",
-                "[bold magenta][S][/bold magenta] Select",
-                "[bold red][Q][/bold red] Quit",
-            ]
-            prompt_parts += ["[bold](R)[/bold]eplay", "[bold](S)[/bold]elect", "[bold](Q)[/bold]uit"]
+                ui_options += ["[yellow]R[/yellow]eplay", "[magenta]S[/magenta]elect", "[red]Q[/red]uit"]
+                prompt_parts += ["[bold](R)[/bold]eplay", "[bold](S)[/bold]elect", "[bold](Q)[/bold]uit"]
+                
+                choices_ui = "  ·  ".join(ui_options)
+                live.update(render_play_panel(ep, "ended", choices_ui))
 
-            console.print(Panel(
-                Columns(options, padding=(0, 3)),
-                title="[dim]Playback Controls[/dim]",
-                border_style="dim", expand=False,
-            ))
-
-            default = "n" if idx < len(episodes) - 1 else "q"
-            choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
-            
-            # Use uppercase choices as well to be case-insensitive in validation
-            all_choices = valid_choices + [c.upper() for c in valid_choices]
-            
-            choice = Prompt.ask(
-                choice_label,
-                choices=all_choices,
-                default=default,
-                show_choices=False
-            ).lower()
+                default = "n" if idx < len(episodes) - 1 else "q"
+                choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
+                all_choices = valid_choices + [c.upper() for c in valid_choices]
+                
+                choice = Prompt.ask(choice_label, choices=all_choices, default=default, show_choices=False).lower()
 
             if choice == "n":   idx += 1
             elif choice == "p": idx -= 1
             elif choice == "r": continue
             elif choice == "q": break
             elif choice == "s":
-                sel = Table(box=box.SIMPLE, header_style="bold cyan",
-                            title="[bold white]Episode List[/bold white]")
-                sel.add_column("#",     justify="right", style="dim")
-                sel.add_column("Ep",   justify="right")
-                sel.add_column("Title")
+                console.print()
+                sel = Table(box=box.ROUNDED, header_style="bold cyan",
+                            title=f"[bold white]Select Episode — {anime_title}[/bold white]")
+                sel.add_column("#",     justify="right", style="dim", width=4)
+                sel.add_column("Ep",    justify="right", width=6)
+                sel.add_column("Title", ratio=1)
+                
                 for i, e in enumerate(episodes):
-                    style = "bold green" if i == idx else ""
-                    sel.add_row(str(i + 1), e.ep_str, e.title or "—", style=style)
+                    style = "bold green" if i == idx else "dim" if i != idx else ""
+                    pointer = "→ " if i == idx else "  "
+                    sel.add_row(f"{pointer}{i+1}", e.ep_str, e.title or "—", style=style)
+                
                 console.print(sel)
-                num = IntPrompt.ask("  [cyan]Jump to #[/cyan]", default=idx + 1)
+                num = IntPrompt.ask(f"  [cyan]Jump to # (1-{len(episodes)})[/cyan]", default=idx + 1)
                 idx = max(0, min(num - 1, len(episodes) - 1))
 
         except KeyboardInterrupt:
