@@ -1493,13 +1493,17 @@ class AnimePaheScanner:
     def discover_all_sessions(cls, host: str, session: str) -> List[str]:
         """Scrape landing page for all variant session IDs (e.g., dubs/subs)."""
         url = f"https://{host}/anime/{session}"
+        # Use FlareSolverr to bypass Cloudflare on the landing page
         result = Solver.fetch_html(url)
         if not result:
+            # Fallback to current session if discovery fails
             return [session]
         html, _ = result
         # Extract all data-session IDs from the landing page
         sessions = re.findall(r'data-session=["\']([^"\']+)["\']', html)
-        return list(dict.fromkeys([session] + sessions))
+        # Capture links like <a href="/anime/..."> to ensure we don't miss alternate sessions
+        link_sessions = re.findall(r'/anime/([a-zA-Z0-9\-]+)', html)
+        return list(dict.fromkeys([session] + sessions + link_sessions))
 
     def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
         console.print("  [dim]Discovering all variants …[/dim]", end="\r")
