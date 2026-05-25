@@ -1945,8 +1945,8 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
         has_other = any(v.audio == other_audio for v in variants)
 
         audio_info = audio_badge(ep.audio)
+        other_label = "DUB" if other_audio == "eng" else "SUB"
         if has_other:
-            other_label = "DUB" if other_audio == "eng" else "SUB"
             audio_info += f" [dim]([cyan]{other_label} available[/cyan])[/dim]"
         else:
             audio_info += f" [dim]([red]no {other_label} variant[/red])[/dim]"
