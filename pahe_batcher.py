@@ -1387,6 +1387,15 @@ def parse_anime_url(url: str) -> Tuple[str, str]:
 
 
 class AnimePaheScanner:
+    @classmethod
+    def search(cls, host: str, query: str) -> List[Dict[str, Any]]:
+        """Search AnimePahe for a title and return results."""
+        url = f"https://{host}/api?m=search&q={urllib.parse.quote(query)}"
+        data = Solver.fetch_json(url)
+        if data is None:
+            return []
+        return data.get("data", [])
+
     def __init__(self, host: str, session: str) -> None:
         self.host    = host
         self.session = session
@@ -1615,6 +1624,70 @@ def noninteractive_episodes(
     if mode == "range":
         return [eps_by_num[n] for n in _parse_ep_range(range_str, anime.episodes) if n in eps_by_num]
     return []
+
+
+def interactive_discovery(host: str) -> Optional[str]:
+    """Interactive search & selection loop. Returns a play/anime URL if selected."""
+    while True:
+        console.print()
+        console.print(Rule("[bold white] Search & Discovery [/bold white]", style="cyan"))
+        query = Prompt.ask("  [cyan]Search Anime[/cyan] [dim](or 'q' to quit)[/dim]").strip()
+        
+        if not query or query.lower() == 'q':
+            return None
+            
+        with Progress(
+            SpinnerColumn(),
+            TextColumn(f"[bold white]Searching for '{query}'..."),
+            console=console, transient=True,
+        ) as prog:
+            prog.add_task("", total=None)
+            results = AnimePaheScanner.search(host, query)
+            
+        if not results:
+            console.print(f"  [yellow]⚠ No results found for '[bold]{query}[/bold]'[/yellow]")
+            continue
+            
+        table = Table(box=box.ROUNDED, header_style="bold cyan", 
+                      title=f"[bold white]Search Results: {query}[/bold white]")
+        table.add_column("#",     justify="right", style="dim", width=4)
+        table.add_column("Title", ratio=1)
+        table.add_column("Type",  justify="center", width=8)
+        table.add_column("Year",  justify="center", width=6)
+        table.add_column("Eps",   justify="center", width=6)
+        table.add_column("Score", justify="center", width=6)
+        
+        for i, res in enumerate(results, 1):
+            table.add_row(
+                str(i),
+                res.get("title", "Unknown"),
+                res.get("type", "-"),
+                str(res.get("year", "-")),
+                str(res.get("episodes", "-")),
+                str(res.get("score", "-"))
+            )
+            
+        console.print(table)
+        
+        choice = Prompt.ask(
+            f"  [cyan]Select # (1-{len(results)})[/cyan] [dim](or 's' to search again, 'q' to quit)[/dim]",
+            default="1"
+        ).lower()
+        
+        if choice == 'q':
+            return None
+        if choice == 's':
+            continue
+            
+        with contextlib.suppress(ValueError):
+            idx = int(choice)
+            if 1 <= idx <= len(results):
+                target = results[idx-1]
+                session = target.get("session")
+                if session:
+                    return f"https://{host}/anime/{session}"
+                    
+        console.print("  [red]⚠ Invalid selection.[/red]")
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -2126,13 +2199,6 @@ def _print_banner() -> None:
 async def _main(args: argparse.Namespace) -> None:
     _print_banner()
 
-    # ── Parse + validate URL ──────────────────────────────────────────────
-    try:
-        host, session = parse_anime_url(args.url)
-    except ValueError as exc:
-        console.print(f"\n  [red]✗ Invalid URL:[/red] {exc}")
-        sys.exit(1)
-
     # ── FlareSolverr health check ─────────────────────────────────────────
     console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="cyan"))
     console.print(f"  [dim]FlareSolverr:[/dim] {FLARESOLVERR_URL}  ", end="")
@@ -2154,6 +2220,21 @@ async def _main(args: argparse.Namespace) -> None:
             f"  [yellow]⚠ aiohttp not installed{err_hint} — using urllib (slower)[/yellow]\n"
             "  [dim]Install for 3–5× faster downloads:  pip install aiohttp[/dim]"
         )
+
+    # ── Discovery / URL Validation ────────────────────────────────────────
+    url = args.url
+    if not url:
+        # Default host if none provided via URL
+        url = interactive_discovery("animepahe.ru")
+        if not url:
+            console.print("\n  [yellow]No anime selected. Exiting.[/yellow]")
+            return
+
+    try:
+        host, session = parse_anime_url(url)
+    except ValueError as exc:
+        console.print(f"\n  [red]✗ Invalid URL:[/red] {exc}")
+        sys.exit(1)
 
     # ── Scan series ───────────────────────────────────────────────────────
     try:
@@ -2355,8 +2436,8 @@ def main() -> None:
         ),
     )
 
-    parser.add_argument("url", metavar="URL",
-                        help="AnimePahe series URL (https://animepahe.ru/anime/<uuid>)")
+    parser.add_argument("url", metavar="URL", nargs='?',
+                        help="AnimePahe series URL (optional if using interactive search)")
 
     sel = parser.add_mutually_exclusive_group()
     sel.add_argument("--all",    "-a", action="store_true",
