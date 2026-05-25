@@ -1491,19 +1491,23 @@ class AnimePaheScanner:
 
     @classmethod
     def discover_all_sessions(cls, host: str, session: str) -> List[str]:
-        """Scrape landing page for unique variant session IDs, focusing on language buttons."""
+        """Scrape landing page for unique variant session IDs, from all relevant links."""
         url = f"https://{host}/anime/{session}"
         result = Solver.fetch_html(url)
         if not result:
             return [session]
         html, _ = result
         
-        # Capture UUIDs from 'data-session' buttons (used for language toggles)
-        # This is the most reliable way to find all audio variants
-        found_sessions = re.findall(r'data-session=["\']([0-9a-f-]{36})["\']', html)
+        # Look for valid 36-char session IDs in /anime/ URLs
+        found_sessions = {session}
+        links = re.findall(r'href=["\']/anime/([0-9a-f-]{36})["\']', html)
+        found_sessions.update(links)
         
-        # Add original if not already there
-        return list(dict.fromkeys([session] + found_sessions))
+        # Also catch data-session if they appear in standard buttons
+        data_sessions = re.findall(r'data-session=["\']([0-9a-f-]{36})["\']', html)
+        found_sessions.update(data_sessions)
+            
+        return list(found_sessions)
 
     def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
         console.print("  [dim]Discovering all variants …[/dim]", end="\r")
