@@ -83,7 +83,7 @@ console = Console()
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────
 
-VERSION          = "2.0.0"
+VERSION          = "2.1.0"
 HLS_WORKERS      = 24          # parallel segment fetches per episode
 RETRY_ATTEMPTS   = 5
 RETRY_BASE_DELAY = 0.5
