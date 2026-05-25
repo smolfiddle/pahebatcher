@@ -1470,12 +1470,21 @@ class AnimePaheScanner:
         for item in data.get("data", []):
             if not (ep_sess := item.get("session", "")):
                 continue
+            
+            # Robust audio detection: check 'audio' field, fallback to title keywords
+            audio = (item.get("audio") or "jpn").strip().lower()
+            title = (item.get("title") or "").strip()
+            if audio == "jpn" and "dub" in title.lower():
+                audio = "eng"
+            elif audio == "eng" and "sub" in title.lower():
+                audio = "jpn"
+                
             eps.append(EpisodeInfo(
                 number   = float(item.get("episode", 0) or 0),
                 session  = ep_sess,
-                title    = ("" if (item.get("title") or "").strip() == "?" else (item.get("title") or "").strip()),
+                title    = ("" if title == "?" else title),
                 fansub   = (item.get("fansub") or "").strip(),
-                audio    = (item.get("audio") or "jpn").strip().lower(),
+                audio    = audio,
                 play_url = f"https://{self.host}/play/{self.session}/{ep_sess}",
             ))
         return eps
