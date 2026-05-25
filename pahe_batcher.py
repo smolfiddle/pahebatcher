@@ -207,16 +207,14 @@ def ep_prefix(ep_num: str) -> str:
         return ep_num
 
 
+def audio_suffix(audio: str) -> str:
+    """Return a simple suffix for filenames."""
+    return "_SUB" if audio == "jpn" else "_DUB"
+
+
 def audio_badge(audio: str, all_variants: List[EpisodeInfo] = None) -> str:
-    if all_variants and len(all_variants) > 1:
-        # Show combined badge if multiple variants exist
-        has_jpn = any(e.audio == "jpn" for e in all_variants)
-        has_eng = any(e.audio == "eng" for e in all_variants)
-        if has_jpn and has_eng:
-            return "[dim]JPN[/dim] [bold yellow]·[/bold yellow] [yellow]DUB[/yellow]"
-
-    return {"eng": "[yellow]DUB[/yellow]", "jpn": "[dim]JPN[/dim]"}.get(audio, f"[cyan]{audio.upper()}[/cyan]")
-
+    # Just return a simple indicator for UI if needed, but we'll remove it from tables
+    return "SUB" if audio == "jpn" else "DUB"
 
 def fmt_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -1077,7 +1075,8 @@ class EpisodeDownloader:
         outdir = Path(self.cfg.output_dir)
         outdir.mkdir(parents=True, exist_ok=True)
         prefix = ep_prefix(ep.ep_str)
-        fname  = sanitize(f"Ep {prefix} - {title}") or f"ep_{ep.ep_str}"
+        suffix = audio_suffix(ep.audio)
+        fname  = sanitize(f"Ep {prefix} - {title}{suffix}") or f"ep_{ep.ep_str}{suffix}"
         out    = outdir / f"{fname}.mp4"
 
         # Already on disk → skip
@@ -1199,11 +1198,12 @@ class BatchDownloader:
         if not outdir.exists():
             return None
         prefix = ep_prefix(ep.ep_str)
+        suffix = audio_suffix(ep.audio)
         # Search for files starting with Ep <prefix> or Ep_<prefix>
         for p in outdir.iterdir():
             if not p.is_file() or p.suffix not in (".mp4", ".ts"):
                 continue
-            if p.name.startswith(f"Ep {prefix}") or p.name.startswith(f"Ep_{prefix}"):
+            if (p.name.startswith(f"Ep {prefix}") or p.name.startswith(f"Ep_{prefix}")) and suffix in p.name:
                 if p.stat().st_size > 0:
                     return p
         return None
@@ -1584,7 +1584,6 @@ def _print_ep_table(anime: AnimeInfo, episodes: List[EpisodeInfo], selected: Set
     t.add_column("",      width=2, justify="center")
     t.add_column("Ep",    width=6, justify="right", style="dim")
     t.add_column("Title", style="white")
-    t.add_column("Audio", width=12)
 
     # Track which episode numbers we've already displayed to avoid duplicates in the table
     seen_nums = set()
@@ -1601,9 +1600,8 @@ def _print_ep_table(anime: AnimeInfo, episodes: List[EpisodeInfo], selected: Set
         if any(v.session in selected for v in variants):
             check = "[green]✓[/green]"
 
-        t.add_row(check, ep.ep_str, ep.title or "—", audio_badge(ep.audio, variants))
+        t.add_row(check, ep.ep_str, ep.title or "—")
     console.print(t)
-
 
 def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
     """Interactive episode picker."""
