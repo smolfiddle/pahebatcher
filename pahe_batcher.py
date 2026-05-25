@@ -2072,10 +2072,15 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
             elif choice == "a":
                 # Toggle audio
                 other_audio = "eng" if ep.audio == "jpn" else "jpn"
+                
+                # REUSE LOGIC: Use the same variant selection approach as the downloader
                 if variant := anime.get_variant(ep.number, other_audio):
                     # Update current episode with its variant
                     all_eps[idx] = variant
                     continue
+                else:
+                    console.print(f"  [red]✗ No {other_audio.upper()} variant available.[/red]")
+                    time.sleep(1)
             elif choice == "s":
                 console.print()
                 sel = Table(box=box.ROUNDED, header_style="bold cyan",
