@@ -2028,6 +2028,10 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
                 if t:
                     ep.title = t
 
+            # Clean title for MPV window
+            clean_title = (ep.title or f"Episode {ep.ep_str}").replace("_", " ")
+            clean_title = re.sub(r"(\s+DUB|\s+SUB)", "", clean_title, flags=re.I)
+            
             cmd = [
                 "mpv",
                 f"--user-agent={info.user_agent}",
@@ -2035,7 +2039,7 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
                 f"--http-header-fields=Cookie: {info.cookie_str}",
                 "--demuxer-lavf-format=hls",
                 f"--demuxer-lavf-o=cookies={info.cookie_str},referer={info.referer}",
-                f"--force-media-title={ep.title or f'Episode {ep.ep_str}'}",
+                f"--force-media-title={clean_title}",
                 "--msg-level=all=warn,lavf=error,ffmpeg=error",
                 info.url,
             ]
