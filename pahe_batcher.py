@@ -1517,27 +1517,35 @@ class AnimePaheScanner:
         session_path = CACHE_DIR / f"{safe_title}_{self.session}"
         anime.has_session = session_path.exists()
 
+        # Deduplicate episodes by number AND audio to avoid phantom duplicates
+        unique_episodes: Dict[Tuple[float, str], EpisodeInfo] = {}
+
         for s in all_sessions:
             console.print(f"  [dim]Scanning session {s} …[/dim]", end="\r")
-            # Create a temporary scanner for this specific variant session
             sub_scanner = AnimePaheScanner(self.host, s)
-            first = sub_scanner._fetch_page(1)
-            if not first:
-                continue
             
-            last_page = int(first.get("last_page", 1))
-            anime.episodes.extend(sub_scanner._parse_page(first))
-            
-            for page in range(2, last_page + 1):
+            # Fetch all pages for this session
+            page = 1
+            while True:
+                data = sub_scanner._fetch_page(page)
+                if not data or not data.get("data"):
+                    break
+                
+                for ep in sub_scanner._parse_page(data):
+                    # Key by (number, audio) to ensure uniqueness
+                    key = (ep.number, ep.audio)
+                    if key not in unique_episodes:
+                        unique_episodes[key] = ep
+                
+                if page >= int(data.get("last_page", 1)):
+                    break
+                page += 1
                 time.sleep(REQUEST_DELAY)
-                if data := sub_scanner._fetch_page(page):
-                    anime.episodes.extend(sub_scanner._parse_page(data))
 
-        console.print(" " * 60, end="\r")
-        # Keep all releases (no deduplication here)
-        anime.episodes.sort(key=lambda e: (e.number, e.audio))
+        anime.episodes = sorted(unique_episodes.values(), key=lambda e: (e.number, e.audio))
         anime.total = len(set(e.number for e in anime.episodes))
 
+        console.print(" " * 60, end="\r")
         return anime
 
 
