@@ -181,9 +181,10 @@ async def test_run_stream_navigation(mock_confirm, mock_ask, mock_exec, mock_ext
         pahe_batcher.EpisodeInfo(1, "s1", "", "F", "jpn", "u1"),
         pahe_batcher.EpisodeInfo(2, "s2", "", "F", "jpn", "u2"),
     ]
+    anime = pahe_batcher.AnimeInfo(session="sess", title="Series", host="host", episodes=episodes)
     cfg = pahe_batcher.DownloadConfig()
 
-    await pahe_batcher.run_stream("Series", episodes, cfg)
+    await pahe_batcher.run_stream(anime, episodes, cfg)
 
     # Verify extract_stream was called
     assert mock_extract.call_count == 2
