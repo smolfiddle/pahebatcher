@@ -1786,7 +1786,7 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
                 Text(anime.title, style="bold cyan underline"),
                 Text.from_markup(f"Finished: {ep.label}", style="dim"),
                 Rule(style="dim", characters="─"),
-                Text(choices_str, style="bold white"),
+                Text.from_markup(choices_str, style="bold white"),
             )
             title = "[bold yellow]Playback Ended[/bold yellow]"
             border = "yellow"
