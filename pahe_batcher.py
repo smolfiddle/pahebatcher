@@ -1538,9 +1538,10 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
     ))
 
     mode = Prompt.ask(
-        "  [cyan]Mode[/cyan]",
+        "  [cyan]Select mode[/cyan]",
         choices=["A", "a", "R", "r", "L", "l", "N", "n", "S", "s"],
         default="A",
+        show_choices=False
     ).upper()
 
     eps_by_num = {ep.number: ep for ep in anime.episodes}
@@ -1839,8 +1840,10 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             ))
 
             default = "n" if idx < len(episodes) - 1 else "q"
-            choice  = Prompt.ask("  [cyan]Action[/cyan]",
-                                 choices=["n", "p", "r", "s", "q"], default=default).lower()
+            choice  = Prompt.ask(
+                "  [cyan]Action [bold](N)[/bold]ext, [bold](P)[/bold]rev, [bold](R)[/bold]eplay, [bold](S)[/bold]elect, [bold](Q)[/bold]uit[/cyan]",
+                choices=["n", "p", "r", "s", "q"], default=default, show_choices=False
+            ).lower()
 
             if choice == "n":   idx += 1
             elif choice == "p": idx -= 1
@@ -1966,7 +1969,7 @@ class SessionManager:
             prompt_parts.append("[white][B]ack[/white]")
             full_prompt = "  " + "  ".join(prompt_parts) + " > "
 
-            choice = Prompt.ask(full_prompt, choices=choices, default="B").upper()
+            choice = Prompt.ask(full_prompt, choices=choices, default="B", show_choices=False).upper()
 
             if choice == "B":
                 return None
@@ -2016,7 +2019,7 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
         title="[cyan]Quality[/cyan]", border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
     ))
     quality = {1: 360, 2: 720, 3: 1080}[int(
-        Prompt.ask("  [cyan]Select[/cyan]", choices=["1", "2", "3"], default=_q_default)
+        Prompt.ask("  [cyan]Select quality[/cyan]", choices=["1", "2", "3"], default=_q_default, show_choices=False)
     )]
 
     # Audio
@@ -2027,7 +2030,7 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
         title="[cyan]Audio Language[/cyan]", border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
     ))
     audio_lang = "jpn" if Prompt.ask(
-        "  [cyan]Select[/cyan]", choices=["1", "2"], default=_audio_default
+        "  [cyan]Select audio[/cyan]", choices=["1", "2"], default=_audio_default, show_choices=False
     ) == "1" else "eng"
 
     # Output directory
@@ -2178,9 +2181,10 @@ async def _main(args: argparse.Namespace) -> None:
             ))
             _default = "6" if _cached_cfg else "1"
             choice = Prompt.ask(
-                "  [cyan]Select[/cyan]",
+                "  [cyan]Select action[/cyan]",
                 choices=["1", "2", "3", "4", "5", "6"],
                 default=_default,
+                show_choices=False
             )
             if choice == "6":
                 break
