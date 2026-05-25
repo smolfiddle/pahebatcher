@@ -1491,29 +1491,19 @@ class AnimePaheScanner:
 
     @classmethod
     def discover_all_sessions(cls, host: str, session: str) -> List[str]:
-        """Scrape landing page for unique variant session IDs, filtering by specific container classes."""
+        """Scrape landing page for unique variant session IDs, focusing on language buttons."""
         url = f"https://{host}/anime/{session}"
         result = Solver.fetch_html(url)
         if not result:
             return [session]
         html, _ = result
         
-        # Regex to find sessions only within common 'data-session' containers (like buttons or specific divs)
-        # This prevents picking up arbitrary navigation links.
-        found_sessions = {session}
+        # Capture UUIDs from 'data-session' buttons (used for language toggles)
+        # This is the most reliable way to find all audio variants
+        found_sessions = re.findall(r'data-session=["\']([0-9a-f-]{36})["\']', html)
         
-        # Look for buttons/links that are clearly related to episode/session lists
-        # Example target: data-session="uuid"
-        for m in re.finditer(r'data-session=["\']([0-9a-f-]{36})["\']', html):
-            found_sessions.add(m.group(1))
-            
-        # If no data-session found, fall back to a much more restricted link filter
-        # that specifically looks for /play/ links or similar
-        if len(found_sessions) == 1:
-            for m in re.finditer(r'href=["\']/play/[0-9a-f-]{36}/([0-9a-f-]{36})["\']', html):
-                found_sessions.add(m.group(1))
-            
-        return list(found_sessions)
+        # Add original if not already there
+        return list(dict.fromkeys([session] + found_sessions))
 
     def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
         console.print("  [dim]Discovering all variants …[/dim]", end="\r")
