@@ -1979,31 +1979,16 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
         )
     while 0 <= idx < len(all_eps):
         ep = all_eps[idx]
-        
-        # ── Audio Selection for Stream ────────────────────────────────────
-        variants = anime.get_all_variants(ep.number)
-        if len(variants) > 1:
-            console.print(f"\n  [bold white]Episode {ep.ep_str}[/bold white]")
-            options = { "1": "jpn", "2": "eng" }
-            # Only show options that actually exist
-            choices = []
-            for k, v in options.items():
-                if any(var.audio == v for var in variants):
-                    choices.append(k)
-                    label = "Subbed (Japanese)" if v == "jpn" else "Dubbed (English)"
-                    console.print(f"  [bold white]{k}[/bold white] {label}")
-            
-            choice = Prompt.ask("  [cyan]Select audio version[/cyan]", choices=choices, default="1", show_choices=False)
-            audio_pref = options[choice]
-            # Update ep to the chosen variant
-            ep = anime.get_variant(ep.number, audio_pref) or ep
-
         try:
             with Progress(
                 SpinnerColumn(),
                 TextColumn(f"[bold white]({idx + 1}/{len(all_eps)}) Resolving Ep {ep.ep_str} ({ep.audio.upper()})…"),
                 console=console, transient=True,
             ) as prog:
+                prog.add_task("", total=None)
+                info = await loop.run_in_executor(
+                    None, extract_stream, ep.play_url, cfg.quality, cfg.audio_lang,
+                )
                 prog.add_task("", total=None)
                 info = await loop.run_in_executor(
                     None, extract_stream, ep.play_url, cfg.quality, cfg.audio_lang,
@@ -2532,16 +2517,30 @@ async def _main(args: argparse.Namespace) -> None:
             break
 
         elif mode == "stream":
-            # Before starting stream, ensure we pick the episodes matching the initial preference
-            # but keep the full series available for navigation.
+            # 1. Ask for global preference if variants exist
+            # Note: We need to check if the anime has variants across the whole series.
+            all_variants_exist = any(len(anime.get_all_variants(ep.number)) > 1 for ep in anime.episodes)
+            audio_pref = args.audio_lang
+
+            if all_variants_exist:
+                console.print(f"\n  [bold white]Select Audio Preference[/bold white]")
+                options = { "1": "jpn", "2": "eng" }
+                console.print(f"  [bold white]1[/bold white] Subbed (Japanese)")
+                console.print(f"  [bold white]2[/bold white] Dubbed (English)")
+
+                choice = Prompt.ask("  [cyan]Preference[/cyan]", choices=["1", "2"], default="1", show_choices=False)
+                audio_pref = options[choice]
+
+            # 2. Filter episodes to preferred audio
             initial_episodes = [
-                anime.get_variant(ep.number, args.audio_lang) or ep
+                anime.get_variant(ep.number, audio_pref) or ep 
                 for ep in chosen
             ]
+
+            # Start streaming with the pre-selected variants
             await run_stream(anime, initial_episodes, cfg)
             if _scripted:
                 break
-
         else:  # download
             # Confirmation summary (skipped in scripted mode)
             if not _scripted:
