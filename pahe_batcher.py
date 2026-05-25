@@ -214,7 +214,7 @@ def audio_badge(audio: str, all_variants: List[EpisodeInfo] = None) -> str:
         has_eng = any(e.audio == "eng" for e in all_variants)
         if has_jpn and has_eng:
             return "[dim]JPN[/dim] [bold yellow]·[/bold yellow] [yellow]DUB[/yellow]"
-    
+
     return {"eng": "[yellow]DUB[/yellow]", "jpn": "[dim]JPN[/dim]"}.get(audio, f"[cyan]{audio.upper()}[/cyan]")
 
 
@@ -653,7 +653,7 @@ def _resolve_kwik(url: str) -> Optional[StreamInfo]:
                         if "=" in name_val:
                             n, v = name_val.split("=", 1)
                             cookies.append({"name": n, "value": v})
-            
+
             user_agent = headers["User-Agent"]
             direct     = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
             video_url  = direct.group(1) if direct else _extract_m3u8(html)
@@ -1416,7 +1416,7 @@ class AnimePaheScanner:
         hosts = [host, "animepahe.pw", "animepahe.com", "animepahe.org"]
         # Remove duplicates while preserving order
         hosts = list(dict.fromkeys(hosts))
-        
+
         for h in hosts:
             url = f"https://{h}/api?m=search&q={urllib.parse.quote(query)}"
             try:
@@ -1480,41 +1480,50 @@ class AnimePaheScanner:
             ))
         return eps
 
-    def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
-        console.print("  [dim]Fetching episode list …[/dim]", end="\r")
-        first = self._fetch_page(1)
-        if not first:
-            raise RuntimeError(
-                "Failed to fetch episode list.\n"
-                "  • Is FlareSolverr running?  Check: " + FLARESOLVERR_URL + "\n"
-                "  • Is the URL an /anime/ series page (not a /play/ episode link)?"
-            )
+    @classmethod
+    def discover_all_sessions(cls, host: str, session: str) -> List[str]:
+        """Scrape landing page for all variant session IDs (e.g., dubs/subs)."""
+        url = f"https://{host}/anime/{session}"
+        result = Solver.fetch_html(url)
+        if not result:
+            return [session]
+        html, _ = result
+        # Extract all data-session IDs from the landing page
+        sessions = re.findall(r'data-session=["\']([^"\']+)["\']', html)
+        return list(dict.fromkeys([session] + sessions))
 
-        last_page = int(first.get("last_page", 1))
-        total     = int(first.get("total", 0))
-        title     = self._fetch_title()
-        anime     = AnimeInfo(
-            session=self.session, title=title,
-            host=self.host, total=total,
-        )
+    def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
+        console.print("  [dim]Discovering all variants …[/dim]", end="\r")
+        all_sessions = self.discover_all_sessions(self.host, self.session)
+        
+        title = self._fetch_title()
+        anime = AnimeInfo(session=self.session, title=title, host=self.host)
 
         # Detect existing session
         safe_title = sanitize(title)
         session_path = CACHE_DIR / f"{safe_title}_{self.session}"
         anime.has_session = session_path.exists()
 
-        anime.episodes.extend(self._parse_page(first))
-
-        for page in range(2, last_page + 1):
-            time.sleep(REQUEST_DELAY)
-            console.print(f"  [dim]Fetching page {page}/{last_page} …[/dim]", end="\r")
-            if data := self._fetch_page(page):
-                anime.episodes.extend(self._parse_page(data))
+        for s in all_sessions:
+            console.print(f"  [dim]Scanning session {s} …[/dim]", end="\r")
+            # Create a temporary scanner for this specific variant session
+            sub_scanner = AnimePaheScanner(self.host, s)
+            first = sub_scanner._fetch_page(1)
+            if not first:
+                continue
+            
+            last_page = int(first.get("last_page", 1))
+            anime.episodes.extend(sub_scanner._parse_page(first))
+            
+            for page in range(2, last_page + 1):
+                time.sleep(REQUEST_DELAY)
+                if data := sub_scanner._fetch_page(page):
+                    anime.episodes.extend(sub_scanner._parse_page(data))
 
         console.print(" " * 60, end="\r")
-
         # Keep all releases (no deduplication here)
         anime.episodes.sort(key=lambda e: (e.number, e.audio))
+        anime.total = len(set(e.number for e in anime.episodes))
 
         return anime
 
@@ -1547,22 +1556,22 @@ def _print_ep_table(anime: AnimeInfo, episodes: List[EpisodeInfo], selected: Set
     t.add_column("Ep",    width=6, justify="right", style="dim")
     t.add_column("Title", style="white")
     t.add_column("Audio", width=12)
-    
+
     # Track which episode numbers we've already displayed to avoid duplicates in the table
     seen_nums = set()
     for ep in episodes:
         if ep.number in seen_nums:
             continue
         seen_nums.add(ep.number)
-        
+
         # Get all variants for this number to show the combined badge
         variants = anime.get_all_variants(ep.number)
         check = "[green]✓[/green]" if ep.session in selected else " "
-        
+
         # If any variant of this number is selected, show the checkmark
         if any(v.session in selected for v in variants):
             check = "[green]✓[/green]"
-            
+
         t.add_row(check, ep.ep_str, ep.title or "—", audio_badge(ep.audio, variants))
     console.print(t)
 
@@ -1649,7 +1658,7 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
                 variants = anime.get_all_variants(num)
                 if not variants:
                     continue
-                
+
                 # If any variant is selected, deselect all. Otherwise select all.
                 if any(v.session in selected for v in variants):
                     for v in variants:
@@ -1658,7 +1667,7 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
                     for v in variants:
                         selected.add(v.session)
 
-    # Filter selection: if an episode number has multiple audio variants, 
+    # Filter selection: if an episode number has multiple audio variants,
     # the actual preference will be handled in the Downloader/Streamer.
     # For now, we return all selected session objects.
     chosen = [ep for ep in anime.episodes if ep.session in selected]
@@ -1688,10 +1697,10 @@ def interactive_discovery(host: str) -> Optional[str]:
         console.print()
         console.print(Rule("[bold white] Search & Discovery [/bold white]", style="cyan"))
         query = Prompt.ask("  [cyan]Search Anime[/cyan] [dim](or 'q' to quit)[/dim]").strip()
-        
+
         if not query or query.lower() == 'q':
             return None
-            
+
         with Progress(
             SpinnerColumn(),
             TextColumn(f"[bold white]Searching for '{query}'..."),
@@ -1699,12 +1708,12 @@ def interactive_discovery(host: str) -> Optional[str]:
         ) as prog:
             prog.add_task("", total=None)
             results = AnimePaheScanner.search(host, query)
-            
+
         if not results:
             console.print(f"  [yellow]⚠ No results found for '[bold]{query}[/bold]'[/yellow]")
             continue
-            
-        table = Table(box=box.ROUNDED, header_style="bold cyan", 
+
+        table = Table(box=box.ROUNDED, header_style="bold cyan",
                       title=f"[bold white]Search Results: {query}[/bold white]")
         table.add_column("#",     justify="right", style="dim", width=4)
         table.add_column("Title", ratio=1)
@@ -1712,7 +1721,7 @@ def interactive_discovery(host: str) -> Optional[str]:
         table.add_column("Year",  justify="center", width=6)
         table.add_column("Eps",   justify="center", width=6)
         table.add_column("Score", justify="center", width=6)
-        
+
         for i, res in enumerate(results, 1):
             table.add_row(
                 str(i),
@@ -1722,19 +1731,19 @@ def interactive_discovery(host: str) -> Optional[str]:
                 str(res.get("episodes", "-")),
                 str(res.get("score", "-"))
             )
-            
+
         console.print(table)
-        
+
         choice = Prompt.ask(
             f"  [cyan]Select # (1-{len(results)})[/cyan] [dim](or 's' to search again, 'q' to quit)[/dim]",
             default="1"
         ).lower()
-        
+
         if choice == 'q':
             return None
         if choice == 's':
             continue
-            
+
         with contextlib.suppress(ValueError):
             idx = int(choice)
             if 1 <= idx <= len(results):
@@ -1743,7 +1752,7 @@ def interactive_discovery(host: str) -> Optional[str]:
                 if session:
                     # Use the host that actually worked for search
                     return f"https://{AnimePaheScanner._current_host}/anime/{session}"
-                    
+
         console.print("  [red]⚠ Invalid selection.[/red]")
 
 
@@ -1891,7 +1900,7 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
 
     loop = asyncio.get_event_loop()
     all_eps = anime.episodes
-    
+
     # Find starting index based on the first chosen episode
     idx = 0
     if chosen_episodes:
@@ -1900,13 +1909,13 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
             if e.session == first_sess:
                 idx = i
                 break
-    
+
     def render_play_panel(ep: EpisodeInfo, state: str = "playing", choices_ui: str = "") -> Panel:
         # Detect if another audio variant exists for this episode
         variants = anime.get_all_variants(ep.number)
         other_audio = "eng" if ep.audio == "jpn" else "jpn"
         has_other = any(v.audio == other_audio for v in variants)
-        
+
         audio_info = audio_badge(ep.audio)
         if has_other:
             other_label = "DUB" if other_audio == "eng" else "SUB"
@@ -1932,7 +1941,7 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
             )
             title = "[bold yellow]Playback Ended[/bold yellow]"
             border = "yellow"
-            
+
         return Panel(
             Align.center(content),
             title=title,
@@ -1955,7 +1964,7 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
             # Update episode metadata from stream page
             if info.audio:  ep.audio  = info.audio
             if info.fansub: ep.fansub = info.fansub
-            
+
             # Aggressive title cleaning
             if info.title and (not ep.title or "animepahe" in ep.title.lower() or "?" in ep.title):
                 t = info.title
@@ -2016,14 +2025,14 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
 
                 ui_options += ["[yellow]R[/yellow]eplay", "[magenta]S[/magenta]elect", "[red]Q[/red]uit"]
                 prompt_parts += ["[bold](R)[/bold]eplay", "[bold](S)[/bold]elect", "[bold](Q)[/bold]uit"]
-                
+
                 choices_ui = "  ·  ".join(ui_options)
                 live.update(render_play_panel(ep, "ended", choices_ui))
 
             default = "n" if idx < len(all_eps) - 1 else "q"
             choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
             all_choices = valid_choices + [c.upper() for c in valid_choices]
-            
+
             choice = Prompt.ask(choice_label, choices=all_choices, default=default, show_choices=False).lower()
 
             if choice == "n":   idx += 1
@@ -2044,12 +2053,12 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
                 sel.add_column("#",     justify="right", style="dim", width=4)
                 sel.add_column("Ep",    justify="right", width=6)
                 sel.add_column("Title", ratio=1)
-                
+
                 for i, e in enumerate(all_eps):
                     style = "bold green" if i == idx else "dim"
                     pointer = "→ " if i == idx else "  "
                     sel.add_row(f"{pointer}{i+1}", e.ep_str, e.title or "—", style=style)
-                
+
                 console.print(sel)
                 num = IntPrompt.ask(f"  [cyan]Jump to # (1-{len(all_eps)})[/cyan]", default=idx + 1)
                 idx = max(0, min(num - 1, len(all_eps) - 1))
@@ -2474,7 +2483,7 @@ async def _main(args: argparse.Namespace) -> None:
             # Before starting stream, ensure we pick the episodes matching the initial preference
             # but keep the full series available for navigation.
             initial_episodes = [
-                anime.get_variant(ep.number, args.audio_lang) or ep 
+                anime.get_variant(ep.number, args.audio_lang) or ep
                 for ep in chosen
             ]
             await run_stream(anime, initial_episodes, cfg)
