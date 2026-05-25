@@ -1234,11 +1234,11 @@ class BatchDownloader:
         download_queue: "asyncio.Queue[Optional[Tuple[EpisodeInfo, StreamInfo]]]" = asyncio.Queue(
             maxsize=self.cfg.max_parallel + 2
         )
-# ── Stage 1: Resolver worker ──────────────────────────────────────
+        # ── Stage 1: Resolver worker ──────────────────────────────────────
 
-async def resolver() -> None:
-    while not resolve_queue.empty():
-        raw_ep = await resolve_queue.get()
+        async def resolver() -> None:
+            while not resolve_queue.empty():
+                raw_ep = await resolve_queue.get()
 
         # 1. Selection: for each episode number, find the variant that matches cfg.audio_lang.
         # If the preferred audio isn't available, we fallback to the first available variant.
