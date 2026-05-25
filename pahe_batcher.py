@@ -1961,8 +1961,9 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
                     None, extract_stream, ep.play_url, cfg.quality, cfg.audio_lang,
                 )
 
-            # Update episode metadata from stream page
-            if info.audio:  ep.audio  = info.audio
+            # Update episode metadata from stream page (only if not already set or generic)
+            if info.audio and (not ep.audio or ep.audio == "jpn"):
+                ep.audio = info.audio
             if info.fansub: ep.fansub = info.fansub
 
             # Aggressive title cleaning
