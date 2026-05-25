@@ -1979,10 +1979,29 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
         )
     while 0 <= idx < len(all_eps):
         ep = all_eps[idx]
+        
+        # ── Audio Selection for Stream ────────────────────────────────────
+        variants = anime.get_all_variants(ep.number)
+        if len(variants) > 1:
+            console.print(f"\n  [bold white]Episode {ep.ep_str}[/bold white]")
+            options = { "1": "jpn", "2": "eng" }
+            # Only show options that actually exist
+            choices = []
+            for k, v in options.items():
+                if any(var.audio == v for var in variants):
+                    choices.append(k)
+                    label = "Subbed (Japanese)" if v == "jpn" else "Dubbed (English)"
+                    console.print(f"  [bold white]{k}[/bold white] {label}")
+            
+            choice = Prompt.ask("  [cyan]Select audio version[/cyan]", choices=choices, default="1", show_choices=False)
+            audio_pref = options[choice]
+            # Update ep to the chosen variant
+            ep = anime.get_variant(ep.number, audio_pref) or ep
+
         try:
             with Progress(
                 SpinnerColumn(),
-                TextColumn(f"[bold white]({idx + 1}/{len(all_eps)}) Resolving Ep {ep.ep_str}…"),
+                TextColumn(f"[bold white]({idx + 1}/{len(all_eps)}) Resolving Ep {ep.ep_str} ({ep.audio.upper()})…"),
                 console=console, transient=True,
             ) as prog:
                 prog.add_task("", total=None)
