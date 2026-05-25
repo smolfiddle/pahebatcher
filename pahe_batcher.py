@@ -131,9 +131,11 @@ class EpisodeInfo:
 
     @property
     def label(self) -> str:
-        num = int(self.number) if self.number == int(self.number) else self.number
-        dub = "  [yellow]DUB[/yellow]" if self.audio and self.audio != "jpn" else ""
-        return f"Ep [cyan]{num:>4}[/cyan]  {self.title or '—'}{dub}"
+        """Rich-markup label used in list tables and download summaries."""
+        num  = int(self.number) if self.number == int(self.number) else self.number
+        dub  = "  [yellow]DUB[/yellow]" if self.audio == "eng" else ""
+        titl = re.sub(r"\s+(?:DUB|SUB)\s*$", "", self.title or "", flags=re.I).strip() or "—"
+        return f"Ep [cyan]{num:>4}[/cyan]  {titl}{dub}"
 
 
 @dataclass
@@ -212,7 +214,7 @@ def audio_suffix(audio: str) -> str:
     return "_SUB" if audio == "jpn" else "_DUB"
 
 
-def audio_badge(audio: str, all_variants: List[EpisodeInfo] = None) -> str:
+def audio_badge(audio: str, all_variants: Optional[List[EpisodeInfo]] = None) -> str:
     # Just return a simple indicator for UI if needed, but we'll remove it from tables
     return "SUB" if audio == "jpn" else "DUB"
 
@@ -228,7 +230,7 @@ def compact_ep_range(episodes: List[EpisodeInfo]) -> str:
     """Summarise episode list as '1–12, 14, 16–24'."""
     if not episodes:
         return "none"
-    nums = sorted(ep.number for ep in episodes)
+    nums = sorted(set(ep.number for ep in episodes))  # deduplicate: both SUB+DUB share numbers
     if len(nums) == 1:
         n = nums[0]; return str(int(n) if n == int(n) else n)
     ranges: List[Tuple[float, float]] = []
@@ -1312,15 +1314,13 @@ class BatchDownloader:
                 item = await download_queue.get()
                 if item is None:
                     break
-                return
                 ep, info = item
                 path = await ep_dl.run(ep, info)
                 self._results[ep.session] = path
                 download_queue.task_done()
 
-                # ── Run pipeline ──────────────────────────────────────────────────
-
-                dash.start()
+        # ── Run pipeline ──────────────────────────────────────────────────
+        dash.start()
         try:
             # We use 1 resolver worker (FlareSolverr is serial) but multiple downloaders
             tasks = [asyncio.create_task(resolver())]
@@ -1471,7 +1471,7 @@ class AnimePaheScanner:
         for item in data.get("data", []):
             if not (ep_sess := item.get("session", "")):
                 continue
-            
+
             # Robust audio detection: check 'audio' field, fallback to title keywords
             audio = (item.get("audio") or "jpn").strip().lower()
             title = (item.get("title") or "").strip()
@@ -1479,7 +1479,7 @@ class AnimePaheScanner:
                 audio = "eng"
             elif audio == "eng" and "sub" in title.lower():
                 audio = "jpn"
-                
+
             eps.append(EpisodeInfo(
                 number   = float(item.get("episode", 0) or 0),
                 session  = ep_sess,
@@ -1492,32 +1492,41 @@ class AnimePaheScanner:
 
     @classmethod
     def discover_all_sessions(cls, host: str, session: str) -> List[str]:
-        """Query the release API for the anime title to find all variant session IDs."""
-        # Fetch the metadata for the series using the provided session UUID
+        """
+        Return all session IDs that are sub/dub variants of the SAME anime.
+        Uses exact normalised-title matching to avoid pulling in other seasons/shows.
+        """
         url = f"https://{host}/api?m=release&id={session}&sort=episode_asc&page=1"
         data = Solver.fetch_json(url)
         if not data or "anime" not in data:
             return [session]
-            
-        # Extract the 'anime' object to get the title
+
         anime_data = data["anime"]
-        title = anime_data.get("title", "")
-        
-        # Search for this title to find all variants (Sub/Dub)
+        title = (anime_data.get("title") or "").strip()
+        if not title:
+            return [session]
+
+        def _norm(t: str) -> str:
+            """Lowercase, strip punctuation, collapse whitespace."""
+            return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", t.lower())).strip()
+
+        norm_title = _norm(title)
         search_results = cls.search(host, title)
-        
-        # Collect unique session IDs from the search results
-        sessions = {session}
+
+        sessions: Set[str] = {session}
         for res in search_results:
-            if "session" in res:
-                sessions.add(res["session"])
-                
+            res_session = res.get("session", "")
+            # Only add sessions whose title is an EXACT match (handles sub vs dub same title).
+            # This prevents pulling in "Spy x Family Part 2", "Spy x Family Season 2", etc.
+            if res_session and _norm(res.get("title", "")) == norm_title:
+                sessions.add(res_session)
+
         return list(sessions)
 
     def scan(self, prefer_audio: str = "jpn") -> AnimeInfo:
         console.print("  [dim]Discovering all variants …[/dim]", end="\r")
         all_sessions = self.discover_all_sessions(self.host, self.session)
-        
+
         title = self._fetch_title()
         anime = AnimeInfo(session=self.session, title=title, host=self.host)
 
@@ -1532,20 +1541,20 @@ class AnimePaheScanner:
         for s in all_sessions:
             console.print(f"  [dim]Scanning session {s} …[/dim]", end="\r")
             sub_scanner = AnimePaheScanner(self.host, s)
-            
+
             # Fetch all pages for this session
             page = 1
             while True:
                 data = sub_scanner._fetch_page(page)
                 if not data or not data.get("data"):
                     break
-                
+
                 for ep in sub_scanner._parse_page(data):
                     # Key by (number, audio) to ensure uniqueness
                     key = (ep.number, ep.audio)
                     if key not in unique_episodes:
                         unique_episodes[key] = ep
-                
+
                 if page >= int(data.get("last_page", 1)):
                     break
                 page += 1
@@ -1605,14 +1614,18 @@ def _print_ep_table(anime: AnimeInfo, episodes: List[EpisodeInfo], selected: Set
     console.print(t)
 
 def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
-    """Interactive episode picker."""
+    """Interactive episode picker. Returns one EpisodeInfo per unique episode number."""
     console.print()
     console.print(Rule(f"[bold white] Episode Selection — {anime.title} [/bold white]",
                        style="cyan"))
 
-    available = compact_ep_range(anime.episodes)
+    # Unique-by-number view for display and selection
+    unique_eps: List[EpisodeInfo] = list({ep.number: ep for ep in anime.episodes}.values())
+    unique_eps.sort(key=lambda e: e.number)
+
+    available = compact_ep_range(unique_eps)
     console.print(
-        f"  [cyan]{len(anime.episodes)}[/cyan] episodes: "
+        f"  [cyan]{anime.total}[/cyan] episodes: "
         f"[bold cyan]{available}[/bold cyan]"
         f"  [dim]({anime.total} total in series)[/dim]\n"
     )
@@ -1639,12 +1652,12 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
         return []
 
     if mode == "A":
-        console.print(f"  [green]✓[/green] All [cyan]{len(anime.episodes)}[/cyan] episodes selected.")
-        return list(anime.episodes)
+        console.print(f"  [green]✓[/green] All [cyan]{anime.total}[/cyan] episodes selected.")
+        return unique_eps
 
     if mode == "N":
         n      = IntPrompt.ask("  Latest [cyan]N[/cyan] episodes", default=1)
-        chosen = anime.episodes[-max(1, min(n, len(anime.episodes))):]
+        chosen = unique_eps[-max(1, min(n, len(unique_eps))):]
         console.print(f"  [green]✓[/green] Latest [cyan]{len(chosen)}[/cyan] selected.")
         return chosen
 
@@ -1654,7 +1667,7 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
             "[dim]1,4,7[/dim]  [dim]5-[/dim]  [dim]1-6,10[/dim]"
         )
         raw    = Prompt.ask("  [cyan]Episodes[/cyan]").strip()
-        nums   = _parse_ep_range(raw, anime.episodes)
+        nums   = _parse_ep_range(raw, unique_eps)
         chosen = [eps_by_num[n] for n in nums if n in eps_by_num]
         if not chosen:
             console.print(f"  [yellow]⚠ Nothing matched [bold]{raw}[/bold]. "
@@ -1668,7 +1681,7 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
     while True:
         console.clear()
         console.print(Rule(f"[bold white] {anime.title} [/bold white]", style="cyan"))
-        _print_ep_table(anime, anime.episodes, selected)
+        _print_ep_table(anime, unique_eps, selected)
         console.print(
             "  [dim]a[/dim]=all  [dim]n[/dim]=none  "
             "[dim]<num>[/dim]=toggle  [dim]done[/dim]=confirm"
@@ -1677,28 +1690,21 @@ def select_episodes(anime: AnimeInfo) -> List[EpisodeInfo]:
         if cmd in ("done", "d", ""):
             break
         elif cmd == "a":
-            selected = {ep.session for ep in anime.episodes}
+            selected = {ep.session for ep in unique_eps}
         elif cmd == "n":
             selected.clear()
         else:
-            for num in _parse_ep_range(cmd, anime.episodes):
-                # Toggle both variants if they exist, or just the number
+            for num in _parse_ep_range(cmd, unique_eps):
                 variants = anime.get_all_variants(num)
                 if not variants:
                     continue
-
-                # If any variant is selected, deselect all. Otherwise select all.
                 if any(v.session in selected for v in variants):
                     for v in variants:
                         selected.discard(v.session)
                 else:
-                    for v in variants:
-                        selected.add(v.session)
+                    selected.add(variants[0].session)
 
-    # Filter selection: if an episode number has multiple audio variants,
-    # the actual preference will be handled in the Downloader/Streamer.
-    # For now, we return all selected session objects.
-    chosen = [ep for ep in anime.episodes if ep.session in selected]
+    chosen = [ep for ep in unique_eps if ep.session in selected]
     console.print(f"  [green]✓[/green] [cyan]{len(chosen)}[/cyan] episodes selected.")
     return chosen
 
@@ -1709,13 +1715,18 @@ def noninteractive_episodes(
     range_str: str = "",
     latest_n:  int = 1,
 ) -> List[EpisodeInfo]:
-    eps_by_num = {ep.number: ep for ep in anime.episodes}
+    """Return one EpisodeInfo per unique episode number; audio resolved downstream."""
+    unique_eps = sorted(
+        {ep.number: ep for ep in anime.episodes}.values(),
+        key=lambda e: e.number,
+    )
     if mode == "all":
-        return list(anime.episodes)
+        return unique_eps
     if mode == "latest":
-        return anime.episodes[-max(1, min(latest_n, len(anime.episodes))):]
+        return unique_eps[-max(1, min(latest_n, len(unique_eps))):]
     if mode == "range":
-        return [eps_by_num[n] for n in _parse_ep_range(range_str, anime.episodes) if n in eps_by_num]
+        eps_by_num = {ep.number: ep for ep in unique_eps}
+        return [eps_by_num[n] for n in _parse_ep_range(range_str, unique_eps) if n in eps_by_num]
     return []
 
 
@@ -1804,16 +1815,11 @@ def _confirm_download(anime: AnimeInfo, episodes: List[EpisodeInfo], cfg: Downlo
     est_mb_per = {360: 50, 720: 90, 1080: 150}.get(cfg.quality, 120)
     est_total  = n * est_mb_per
 
-    # Calculate audio breakdown from actual episode data
-    sub_n = sum(1 for ep in episodes if ep.audio == "jpn")
-    dub_n = n - sub_n
-    audio_str = ""
-    if dub_n and sub_n:
-        audio_str = f"[cyan]{sub_n}[/cyan] JPN + [yellow]{dub_n}[/yellow] DUB"
-    elif dub_n:
-        audio_str = f"[yellow]{dub_n} DUB[/yellow]"
+    # Show what audio will actually be downloaded (user's choice, not scanner label)
+    if cfg.audio_lang == "jpn":
+        audio_str = "[cyan]SUB[/cyan]  [dim](Japanese audio)[/dim]"
     else:
-        audio_str = f"[cyan]{sub_n} JPN[/cyan]"
+        audio_str = "[yellow]DUB[/yellow]  [dim](English audio)[/dim]"
 
     stats = [
         f"  [dim]Series:[/dim]    [bold white]{anime.title}[/bold white]",
@@ -1917,59 +1923,143 @@ async def run_export(episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
 # 17.  STREAM MODE  (MPV playback)
 # ═════════════════════════════════════════════════════════════════════════
 
-async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: DownloadConfig) -> None:
+def _clean_ep_title(ep: EpisodeInfo, info: StreamInfo) -> None:
+    """
+    Update episode title from the resolved stream page, stripping site
+    boilerplate.  Never touches ep.audio — the API scan result is authoritative.
+    """
+    if not info.title:
+        return
+    # Skip update if we already have a clean title
+    if ep.title and "animepahe" not in ep.title.lower() and "?" not in ep.title:
+        return
+    t = info.title
+    t = re.sub(r"\s*::\s*animepahe.*$",  "", t, flags=re.I).strip()
+    t = re.sub(r"\s*-\s*animepahe.*$",   "", t, flags=re.I).strip()
+    t = re.sub(r"\s*[|·].*$",            "", t).strip()
+    t = re.sub(r"^Watch\s+.*?Episode\s+\d+.*", "", t, flags=re.I).strip()
+    t = re.sub(r"\((?:1080|720|360)p\).*", "", t, flags=re.I).strip()
+    t = re.sub(r"\[SubsPlease\].*",      "", t, flags=re.I).strip()
+    t = re.sub(r"AnimePahe_",            "", t, flags=re.I).strip()
+    t = t.replace("_", " ").strip()
+    # Always strip trailing audio markers — we trust ep.audio from the scan
+    t = re.sub(r"\s+(?:DUB|SUB)\s*$",   "", t, flags=re.I).strip()
+    if t:
+        ep.title = t
+
+
+def _display_title(ep: EpisodeInfo) -> str:
+    """Rich-safe episode title without audio markers."""
+    t = re.sub(r"\s+(?:DUB|SUB)\s*$", "", ep.title or "", flags=re.I).strip()
+    return t or f"Episode {ep.ep_str}"
+
+
+def _audio_pill(lang: str) -> str:
+    """Rich markup for an audio badge."""
+    return "[cyan]SUB[/cyan]" if lang == "jpn" else "[yellow]DUB[/yellow]"
+
+
+async def run_stream(
+    anime: AnimeInfo,
+    chosen_episodes: List[EpisodeInfo],
+    cfg: DownloadConfig,
+    interactive: bool = True,
+    prompt_audio: bool = True,
+) -> None:
+    """Stream episodes via MPV with per-episode audio switching and polished navigation."""
     if not shutil.which("mpv"):
         console.print("\n  [red]✗ MPV not found![/red]")
         console.print("  [dim]Install MPV from https://mpv.io and ensure it is in your PATH.[/dim]")
         return
 
+    loop = asyncio.get_event_loop()
+
+    # ── Audio-lane selection ──────────────────────────────────────────────
+    # Offer SUB / DUB choice before the first episode plays.
+    # The chosen audio lane drives navigation (N/P stay in the same lane).
+    has_sub = any(e.audio == "jpn" for e in anime.episodes)
+    has_dub = any(e.audio == "eng" for e in anime.episodes)
+    audio_pref = cfg.audio_lang  # start with CLI / config preference
+
+    if interactive and prompt_audio and has_sub and has_dub:
+        console.print()
+        _aud_default = "1" if audio_pref == "jpn" else "2"
+        console.print(Panel(
+            "  [bold white]1[/bold white]  [cyan]Subbed[/cyan]   [dim](Japanese audio)[/dim]\n"
+            "  [bold white]2[/bold white]  [yellow]Dubbed[/yellow]   [dim](English audio)[/dim]",
+            title="[cyan]Select Audio Track[/cyan]",
+            border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
+        ))
+        _pick = Prompt.ask(
+            "  [cyan]Audio[/cyan]", choices=["1", "2"],
+            default=_aud_default, show_choices=False,
+        )
+        audio_pref = "jpn" if _pick == "1" else "eng"
+
+    # ── Build ordered playlist for the selected audio lane ────────────────
+    def _build_playlist(lang: str) -> List[EpisodeInfo]:
+        """
+        For each chosen episode, use the requested-language variant if available,
+        otherwise fall back to whatever variant the API returned.
+        """
+        result: List[EpisodeInfo] = []
+        for ep in chosen_episodes:
+            variant = anime.get_variant(ep.number, lang) or ep
+            if variant not in result:          # guard against accidental dups
+                result.append(variant)
+        return result
+
+    playlist = _build_playlist(audio_pref)
+    idx = 0
+
     console.print()
     console.print(Rule("[bold white] Streaming via MPV [/bold white]", style="cyan"))
 
-    loop = asyncio.get_event_loop()
-    all_eps = anime.episodes
+    # ── Panel renderer ────────────────────────────────────────────────────
+    def render_play_panel(
+        ep: EpisodeInfo,
+        state: str = "playing",
+        choices_ui: str = "",
+    ) -> Panel:
+        cur_lang   = ep.audio
+        other_lang = "eng" if cur_lang == "jpn" else "jpn"
+        has_alt    = anime.get_variant(ep.number, other_lang) is not None
 
-    # Find starting index based on the first chosen episode
-    idx = 0
-    if chosen_episodes:
-        first_sess = chosen_episodes[0].session
-        for i, e in enumerate(all_eps):
-            if e.session == first_sess:
-                idx = i
-                break
+        audio_str = _audio_pill(cur_lang)
+        if has_alt:
+            alt_name = "DUB" if other_lang == "eng" else "SUB"
+            audio_str += f"  [dim]([cyan]{alt_name} available — press [bold]A[/bold] to switch[/cyan])[/dim]"
 
-    def render_play_panel(ep: EpisodeInfo, state: str = "playing", choices_ui: str = "") -> Panel:
-        # Detect if another audio variant exists for this episode
-        variants = anime.get_all_variants(ep.number)
-        other_audio = "eng" if ep.audio == "jpn" else "jpn"
-        has_other = any(v.audio == other_audio for v in variants)
-
-        audio_info = audio_badge(ep.audio)
-        other_label = "DUB" if other_audio == "eng" else "SUB"
-        if has_other:
-            audio_info += f" [dim]([cyan]{other_label} available[/cyan])[/dim]"
-        else:
-            audio_info += f" [dim]([red]no {other_label} variant[/red])[/dim]"
+        ep_title = _display_title(ep)
 
         if state == "playing":
             content = Group(
                 Text(anime.title, style="bold cyan underline"),
-                Text.from_markup(f"Now Playing: {ep.label}", style="bold green"),
-                Text.from_markup(f"Audio: {audio_info}", style="dim"),
-                Text(f"Quality: {cfg.quality}p  ·  Episode {idx + 1} of {len(all_eps)}", style="dim"),
+                Text.from_markup(
+                    f"▶  Ep [cyan]{ep.ep_str}[/cyan]  [bold white]{ep_title}[/bold white]",
+                    style="bold green",
+                ),
+                Text.from_markup(f"   Audio: {audio_str}  ·  Quality: {cfg.quality}p", style="dim"),
+                Text.from_markup(
+                    f"   Episode [cyan]{idx + 1}[/cyan] of [cyan]{len(playlist)}[/cyan]",
+                    style="dim",
+                ),
                 Rule(style="dim", characters="─"),
-                Text("Close MPV window to return to controls", style="italic cyan"),
+                Text("Close MPV window to return to controls", style="italic dim"),
             )
-            title = "[bold cyan]Live Playback[/bold cyan]"
+            title  = "[bold cyan]▶  Live Playback[/bold cyan]"
             border = "green"
         else:
             content = Group(
                 Text(anime.title, style="bold cyan underline"),
-                Text.from_markup(f"Finished: {ep.label}", style="dim"),
+                Text.from_markup(
+                    f"■  Ep [cyan]{ep.ep_str}[/cyan]  [dim]{ep_title}[/dim]  {audio_str}",
+                    style="dim",
+                ),
                 Rule(style="dim", characters="─"),
-                Text.from_markup(choices_ui, style="bold white"),
+                Text.from_markup(choices_ui or ""),
             )
-            title = "[bold yellow]Playback Ended[/bold yellow]"
+            title  = "[bold yellow]■  Playback Ended[/bold yellow]"
             border = "yellow"
 
         return Panel(
@@ -1977,46 +2067,35 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
             title=title,
             border_style=border, box=box.ROUNDED, padding=(1, 2),
         )
-    while 0 <= idx < len(all_eps):
-        ep = all_eps[idx]
+
+    # ── Main playback loop ────────────────────────────────────────────────
+    while 0 <= idx < len(playlist):
+        ep = playlist[idx]
         try:
+            # Resolve stream URL (pass ep.audio so extract_stream picks the right link)
             with Progress(
                 SpinnerColumn(),
-                TextColumn(f"[bold white]({idx + 1}/{len(all_eps)}) Resolving Ep {ep.ep_str} ({ep.audio.upper()})…"),
+                TextColumn(
+                    f"[bold white]({idx + 1}/{len(playlist)})"
+                    f"  Resolving Ep [cyan]{ep.ep_str}[/cyan]"
+                    f"  {_audio_pill(ep.audio)}…"
+                ),
                 console=console, transient=True,
             ) as prog:
                 prog.add_task("", total=None)
                 info = await loop.run_in_executor(
-                    None, extract_stream, ep.play_url, cfg.quality, cfg.audio_lang,
-                )
-                prog.add_task("", total=None)
-                info = await loop.run_in_executor(
-                    None, extract_stream, ep.play_url, cfg.quality, cfg.audio_lang,
+                    None, extract_stream, ep.play_url, cfg.quality, ep.audio,
                 )
 
-            # Update episode metadata from stream page (only if not already set or generic)
-            if info.audio and (not ep.audio or ep.audio == "jpn"):
-                ep.audio = info.audio
-            if info.fansub: ep.fansub = info.fansub
+            # Update title metadata; never overwrite ep.audio (API scan is authoritative)
+            _clean_ep_title(ep, info)
+            if info.fansub:
+                ep.fansub = info.fansub
 
-            # Aggressive title cleaning
-            if info.title and (not ep.title or "animepahe" in ep.title.lower() or "?" in ep.title):
-                t = info.title
-                t = re.sub(r"\s*[|·].*$", "", t).strip()
-                t = re.sub(r"^Watch\s+.*?Episode\s+\d+.*", "", t, flags=re.I).strip()
-                t = re.sub(r"\(1080p|720p|360p\).*", "", t, flags=re.I).strip()
-                t = re.sub(r"\[SubsPlease\].*", "", t, flags=re.I).strip()
-                t = re.sub(r"AnimePahe_", "", t, flags=re.I).strip()
-                t = t.replace("_", " ").strip()
-                if ep.audio == "jpn":
-                    t = re.sub(r"\s+DUB\s*$", "", t, flags=re.I).strip()
-                if t:
-                    ep.title = t
+            # MPV window title (plain text, no Rich markup, no audio markers)
+            mpv_title = re.sub(r"\s+(?:DUB|SUB)\s*$", "", ep.title or f"Episode {ep.ep_str}", flags=re.I).strip()
+            audio_tag = "SUB" if ep.audio == "jpn" else "DUB"
 
-            # Clean title for MPV window
-            clean_title = (ep.title or f"Episode {ep.ep_str}").replace("_", " ")
-            clean_title = re.sub(r"(\s+DUB|\s+SUB)", "", clean_title, flags=re.I)
-            
             cmd = [
                 "mpv",
                 f"--user-agent={info.user_agent}",
@@ -2024,7 +2103,7 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
                 f"--http-header-fields=Cookie: {info.cookie_str}",
                 "--demuxer-lavf-format=hls",
                 f"--demuxer-lavf-o=cookies={info.cookie_str},referer={info.referer}",
-                f"--force-media-title={clean_title}",
+                f"--force-media-title={mpv_title} [{audio_tag}]",
                 "--msg-level=all=warn,lavf=error,ffmpeg=error",
                 info.url,
             ]
@@ -2037,74 +2116,89 @@ async def run_stream(anime: AnimeInfo, chosen_episodes: List[EpisodeInfo], cfg: 
                 )
                 await proc.communicate()
 
-                # Build playback controls
-                valid_choices = ["r", "s", "q"]
-                prompt_parts = []
-                ui_options = []
+                # ── Build post-playback control bar ───────────────────────
+                valid_choices: List[str] = ["r", "s", "q"]
+                prompt_parts:  List[str] = []
+                ui_options:    List[str] = []
 
                 if idx > 0:
                     valid_choices.insert(0, "p")
                     prompt_parts.append("[bold](P)[/bold]rev")
                     ui_options.append("[cyan]P[/cyan]rev")
 
-                if idx < len(all_eps) - 1:
+                if idx < len(playlist) - 1:
                     valid_choices.insert(0, "n")
                     prompt_parts.append("[bold](N)[/bold]ext")
                     ui_options.append("[green]N[/green]ext")
 
-                # Audio switch option if variant exists
-                variants = anime.get_all_variants(ep.number)
-                other_audio = "eng" if ep.audio == "jpn" else "jpn"
-                has_other = any(v.audio == other_audio for v in variants)
-                if has_other:
+                other_lang = "eng" if ep.audio == "jpn" else "jpn"
+                has_alt    = anime.get_variant(ep.number, other_lang) is not None
+                if has_alt:
                     valid_choices.insert(0, "a")
                     prompt_parts.append("[bold](A)[/bold]udio")
-                    ui_options.append("[cyan]A[/cyan]udio")
+                    alt_name = "DUB" if other_lang == "eng" else "SUB"
+                    ui_options.append(f"[yellow]A[/yellow]udio→{alt_name}")
 
-                ui_options += ["[yellow]R[/yellow]eplay", "[magenta]S[/magenta]elect", "[red]Q[/red]uit"]
+                ui_options  += ["[white]R[/white]eplay", "[magenta]S[/magenta]elect", "[red]Q[/red]uit"]
                 prompt_parts += ["[bold](R)[/bold]eplay", "[bold](S)[/bold]elect", "[bold](Q)[/bold]uit"]
 
                 choices_ui = "  ·  ".join(ui_options)
                 live.update(render_play_panel(ep, "ended", choices_ui))
 
-            default = "n" if idx < len(all_eps) - 1 else "q"
-            choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
+            # ── Prompt ────────────────────────────────────────────────────
+            default     = "n" if idx < len(playlist) - 1 else "q"
             all_choices = valid_choices + [c.upper() for c in valid_choices]
+            choice = Prompt.ask(
+                "  [cyan]" + "  ".join(prompt_parts) + "[/cyan]",
+                choices=all_choices, default=default, show_choices=False,
+            ).lower()
 
-            choice = Prompt.ask(choice_label, choices=all_choices, default=default, show_choices=False).lower()
-
-            if choice == "n":   idx += 1
-            elif choice == "p": idx -= 1
-            elif choice == "r": continue
-            elif choice == "q": break
+            if choice == "n":
+                idx += 1
+            elif choice == "p":
+                idx -= 1
+            elif choice == "r":
+                continue
+            elif choice == "q":
+                break
             elif choice == "a":
-                # Toggle audio
-                other_audio = "eng" if ep.audio == "jpn" else "jpn"
-                
-                # REUSE LOGIC: Use the same variant selection approach as the downloader
-                if variant := anime.get_variant(ep.number, other_audio):
-                    # Update current episode with its variant
-                    all_eps[idx] = variant
+                # Switch the entire playlist to the other audio lane, keeping position
+                other_lang = "eng" if ep.audio == "jpn" else "jpn"
+                if anime.get_variant(ep.number, other_lang):
+                    audio_pref = other_lang
+                    playlist   = _build_playlist(audio_pref)
+                    # idx stays the same — same episode, different lane
                     continue
                 else:
-                    console.print(f"  [red]✗ No {other_audio.upper()} variant available.[/red]")
+                    alt_name = "DUB" if other_lang == "eng" else "SUB"
+                    console.print(f"  [red]✗ No {alt_name} variant available for this episode.[/red]")
                     time.sleep(1)
             elif choice == "s":
+                # Episode jump selector
                 console.print()
-                sel = Table(box=box.ROUNDED, header_style="bold cyan",
-                            title=f"[bold white]Select Episode — {anime.title}[/bold white]")
+                sel = Table(
+                    box=box.ROUNDED, header_style="bold cyan",
+                    title=f"[bold white]Select Episode — {anime.title}[/bold white]",
+                )
                 sel.add_column("#",     justify="right", style="dim", width=4)
                 sel.add_column("Ep",    justify="right", width=6)
+                sel.add_column("Audio", justify="center", width=5)
                 sel.add_column("Title", ratio=1)
 
-                for i, e in enumerate(all_eps):
-                    style = "bold green" if i == idx else "dim"
+                for i, e in enumerate(playlist):
+                    style   = "bold green" if i == idx else "dim"
                     pointer = "→ " if i == idx else "  "
-                    sel.add_row(f"{pointer}{i+1}", e.ep_str, e.title or "—", style=style)
+                    badge   = "[cyan]SUB[/cyan]" if e.audio == "jpn" else "[yellow]DUB[/yellow]"
+                    sel.add_row(
+                        f"{pointer}{i + 1}", e.ep_str, badge, _display_title(e),
+                        style=style,
+                    )
 
                 console.print(sel)
-                num = IntPrompt.ask(f"  [cyan]Jump to # (1-{len(all_eps)})[/cyan]", default=idx + 1)
-                idx = max(0, min(num - 1, len(all_eps) - 1))
+                num = IntPrompt.ask(
+                    f"  [cyan]Jump to # (1–{len(playlist)})[/cyan]", default=idx + 1
+                )
+                idx = max(0, min(num - 1, len(playlist) - 1))
 
         except KeyboardInterrupt:
             break
@@ -2400,6 +2494,7 @@ async def _main(args: argparse.Namespace) -> None:
     # ── Determine mode: interactive vs scripted ───────────────────────────
     _scripted = bool(args.all or args.range or args.latest or args.export or args.stream)
     _cached_cfg: Optional[DownloadConfig] = None
+    _stream_audio_lang: str = args.audio_lang  # updated by the SUB/DUB prompt below
 
     while True:
         # ── Action selection ──────────────────────────────────────────────
@@ -2454,6 +2549,43 @@ async def _main(args: argparse.Namespace) -> None:
 
             mode = {"1": "download", "2": "export", "3": "stream"}[choice]
 
+        # ── Stream audio pre-selection (before episode picker) ────────────
+        if mode == "stream" and not _scripted:
+            _s_has_sub = any(e.audio == "jpn" for e in anime.episodes)
+            _s_has_dub = any(e.audio == "eng" for e in anime.episodes)
+
+            # Build panel lines — dim/mark whichever variant isn't available
+            _sub_line = (
+                "  [bold white]1[/bold white]  [cyan]SUB[/cyan]   [dim](Japanese audio — subtitled)[/dim]"
+                if _s_has_sub else
+                "  [dim]1  SUB   (not available)[/dim]"
+            )
+            _dub_line = (
+                "  [bold white]2[/bold white]  [yellow]DUB[/yellow]   [dim](English audio — dubbed)[/dim]"
+                if _s_has_dub else
+                "  [dim]2  DUB   (not available)[/dim]"
+            )
+            console.print()
+            console.print(Panel(
+                f"{_sub_line}\n{_dub_line}",
+                title="[cyan]Select Audio[/cyan]",
+                border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
+            ))
+
+            if _s_has_sub and _s_has_dub:
+                _aud_default = "1" if _stream_audio_lang == "jpn" else "2"
+                _pick = Prompt.ask(
+                    "  [cyan]Audio[/cyan]", choices=["1", "2"],
+                    default=_aud_default, show_choices=False,
+                )
+                _stream_audio_lang = "jpn" if _pick == "1" else "eng"
+            elif _s_has_dub:
+                console.print("  [dim]Only DUB available — selecting automatically.[/dim]")
+                _stream_audio_lang = "eng"
+            else:
+                console.print("  [dim]Only SUB available — selecting automatically.[/dim]")
+                _stream_audio_lang = "jpn"
+
         # ── Episode selection ─────────────────────────────────────────────
         if args.all:
             chosen = noninteractive_episodes(anime, "all")
@@ -2485,64 +2617,29 @@ async def _main(args: argparse.Namespace) -> None:
                 export_mode=(mode == "export"), stream_mode=(mode == "stream"),
                 audio_lang=args.audio_lang,
             )
-        elif mode == "stream":
-            cfg = DownloadConfig(
-                quality=args.quality, stream_mode=True, audio_lang=args.audio_lang,
-                output_dir=series_dir,
-            )
         else:
-            # Reuse previous settings if same mode
-            if _cached_cfg and (
-                (mode == "download" and not _cached_cfg.export_mode and not _cached_cfg.stream_mode) or
-                (mode == "export" and _cached_cfg.export_mode)
-            ):
-                cfg = _cached_cfg
-                console.print(
-                    f"  [dim]Reusing settings:[/dim] "
-                    f"[cyan]{cfg.quality}p[/cyan] · "
-                    f"[cyan]{'Sub' if cfg.audio_lang == 'jpn' else 'Dub'}[/cyan] · "
-                    f"[cyan]{cfg.output_dir}[/cyan]"
-                )
-            else:
-                cfg = _wizard_config(DownloadConfig(
-                    output_dir=series_dir, max_parallel=args.parallel,
-                    hls_workers=args.workers, quality=args.quality,
-                    audio_lang=args.audio_lang,
-                ))
-                _cached_cfg = cfg
+            # Interactive: run the settings wizard (for download; stream/export get a lighter config)
+            _defaults = DownloadConfig(output_dir=series_dir, quality=args.quality, audio_lang=args.audio_lang)
+            cfg = _wizard_config(_defaults) if mode == "download" else _defaults
 
-        # ── Execute ───────────────────────────────────────────────────────
+        # ── Mode dispatch ─────────────────────────────────────────────────
         if mode == "export":
             await run_export(chosen, cfg)
-            break
-
-        elif mode == "stream":
-            # 1. Ask for global preference if variants exist
-            # Note: We need to check if the anime has variants across the whole series.
-            all_variants_exist = any(len(anime.get_all_variants(ep.number)) > 1 for ep in anime.episodes)
-            audio_pref = args.audio_lang
-
-            if all_variants_exist:
-                console.print(f"\n  [bold white]Select Audio Preference[/bold white]")
-                options = { "1": "jpn", "2": "eng" }
-                console.print(f"  [bold white]1[/bold white] Subbed (Japanese)")
-                console.print(f"  [bold white]2[/bold white] Dubbed (English)")
-
-                choice = Prompt.ask("  [cyan]Preference[/cyan]", choices=["1", "2"], default="1", show_choices=False)
-                audio_pref = options[choice]
-
-            # 2. Filter episodes to preferred audio
-            initial_episodes = [
-                anime.get_variant(ep.number, audio_pref) or ep 
-                for ep in chosen
-            ]
-
-            # Start streaming with the pre-selected variants
-            await run_stream(anime, initial_episodes, cfg)
             if _scripted:
                 break
+
+        elif mode == "stream":
+            # Audio lane already chosen before episode selection (interactive) or via
+            # --audio flag (scripted). Pass prompt_audio=False so run_stream doesn't ask again.
+            stream_cfg = DownloadConfig(
+                quality=cfg.quality, stream_mode=True,
+                audio_lang=_stream_audio_lang, output_dir=series_dir,
+            )
+            await run_stream(anime, chosen, stream_cfg, interactive=not _scripted, prompt_audio=False)
+            if _scripted:
+                break
+
         else:  # download
-            # Confirmation summary (skipped in scripted mode)
             if not _scripted:
                 if not _confirm_download(anime, chosen, cfg):
                     continue
