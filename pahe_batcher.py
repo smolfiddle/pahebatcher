@@ -1824,15 +1824,26 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             # Playback controls
             console.print()
             options: List[str] = []
-            if idx < len(episodes) - 1:
-                options.append("[bold green][N][/bold green] Next")
+            valid_choices = ["r", "s", "q"]
+            prompt_parts = []
+
             if idx > 0:
                 options.append("[bold cyan][P][/bold cyan] Previous")
+                valid_choices.insert(0, "p")
+                prompt_parts.append("[bold](P)[/bold]rev")
+
+            if idx < len(episodes) - 1:
+                options.append("[bold green][N][/bold green] Next")
+                valid_choices.insert(0, "n")
+                prompt_parts.append("[bold](N)[/bold]ext")
+
             options += [
                 "[bold yellow][R][/bold yellow] Replay",
                 "[bold magenta][S][/bold magenta] Select",
                 "[bold red][Q][/bold red] Quit",
             ]
+            prompt_parts += ["[bold](R)[/bold]eplay", "[bold](S)[/bold]elect", "[bold](Q)[/bold]uit"]
+
             console.print(Panel(
                 Columns(options, padding=(0, 3)),
                 title="[dim]Playback Controls[/dim]",
@@ -1840,9 +1851,16 @@ async def run_stream(anime_title: str, episodes: List[EpisodeInfo], cfg: Downloa
             ))
 
             default = "n" if idx < len(episodes) - 1 else "q"
-            choice  = Prompt.ask(
-                "  [cyan]Action [bold](N)[/bold]ext, [bold](P)[/bold]rev, [bold](R)[/bold]eplay, [bold](S)[/bold]elect, [bold](Q)[/bold]uit[/cyan]",
-                choices=["n", "p", "r", "s", "q"], default=default, show_choices=False
+            choice_label = "  [cyan]Action " + ", ".join(prompt_parts) + "[/cyan]"
+            
+            # Use uppercase choices as well to be case-insensitive in validation
+            all_choices = valid_choices + [c.upper() for c in valid_choices]
+            
+            choice = Prompt.ask(
+                choice_label,
+                choices=all_choices,
+                default=default,
+                show_choices=False
             ).lower()
 
             if choice == "n":   idx += 1
