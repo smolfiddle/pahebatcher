@@ -210,8 +210,8 @@ def ep_prefix(ep_num: str) -> str:
 
 
 def audio_suffix(audio: str) -> str:
-    """Return a simple suffix for filenames."""
-    return "_SUB" if audio == "jpn" else "_DUB"
+    """Return an empty suffix for filenames as requested."""
+    return ""
 
 
 def audio_badge(audio: str, all_variants: Optional[List[EpisodeInfo]] = None) -> str:
@@ -273,13 +273,13 @@ def make_ssl_ctx() -> ssl.SSLContext:
 class SegmentStore:
     """
     Stores HLS segments as individual numbered files in a persistent cache directory.
-    Structure: pahe_cache/[Sanitized_Anime_Title]_[Anime_UUID]/Ep_[Number]/
+    Structure: pahe_cache/[Sanitized_Anime_Title]_[Anime_UUID]/Ep_[Number]_[AUDIO]/
     """
 
-    def __init__(self, anime_title: str, anime_session: str, ep_num: str) -> None:
+    def __init__(self, anime_title: str, anime_session: str, ep_num: str, audio: str = "jpn") -> None:
         safe_title = sanitize(anime_title)
         self.root  = CACHE_DIR / f"{safe_title}_{anime_session}"
-        self.dir   = self.root / f"Ep_{ep_num}"
+        self.dir   = self.root / f"Ep_{ep_num}_{audio.upper()}"
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def save_metadata(self, anime_title: str, url: str) -> None:
@@ -699,7 +699,16 @@ def _parse_resolution_buttons(html: str) -> List[Tuple[int, str, bool, str]]:
             if not res_m:
                 continue
             res = int(res_m.group(1))
-        is_dub   = bool(re.search(r'''data-audio\s*=\s*["']eng["']''', attrs, re.I))
+            
+        # IMPROVED AUDIO DETECTION: check data-audio, and text/classes for 'eng'
+        is_dub = False
+        if re.search(r'''data-audio\s*=\s*["']eng["']''', attrs, re.I):
+            is_dub = True
+        elif re.search(r'''class\s*=\s*["'][^"']*eng[^"']*["']''', attrs, re.I):
+            is_dub = True
+        elif "eng" in attrs.lower() or "dub" in text.lower():
+            is_dub = True
+            
         fansub_m = re.search(r'data-fansub=["\']([^"\']+)["\']', attrs, re.I)
         fansub   = fansub_m.group(1) if fansub_m else (text.split("·")[0].strip())
         entries.append((res, kwik_url, is_dub, fansub))
@@ -720,19 +729,32 @@ def extract_stream(play_url: str, quality: int = 1080, audio: str = "jpn") -> St
 
     quality_map: Dict[int, Tuple[str, bool, str]] = {}
     if entries:
-        filtered = [e for e in entries if (not e[2] if audio == "jpn" else e[2])]
+        # 1. Strictly prioritize the requested audio variant
+        target_dub = (audio == "eng")
+        filtered = [e for e in entries if e[2] == target_dub]
+        
+        # 2. Fallback ONLY if the requested variant is completely missing
         if not filtered:
-            log.warning("Audio filter (%s) removed all links — using all", audio)
+            log.warning("Requested audio %s not found on play page - using available", audio)
             filtered = entries
+            
         for res, url, is_dub, fansub in filtered:
-            quality_map.setdefault(res, (url, is_dub, fansub))
+            # If multiple links for same resolution, prefer the one that matches our target audio
+            if res in quality_map:
+                existing_is_dub = quality_map[res][1]
+                if existing_is_dub != target_dub and is_dub == target_dub:
+                    quality_map[res] = (url, is_dub, fansub)
+            else:
+                quality_map[res] = (url, is_dub, fansub)
     else:
         for url, q_str in re.findall(
             r'(?:href|data-src)=["\']([^"\']*kwik\.[^"\']+)["\'][^>]*>\s*(?:\S+\s+)?(\d+)p',
             html, re.I,
         ):
             with contextlib.suppress(ValueError):
-                quality_map.setdefault(int(q_str), (url, False, ""))
+                # Fallback assumes JPN unless 'eng' in URL
+                is_dub_found = "eng" in url.lower() or "dub" in url.lower()
+                quality_map.setdefault(int(q_str), (url, is_dub_found, ""))
 
     if quality_map:
         qs = sorted(quality_map, reverse=True)
@@ -1064,10 +1086,10 @@ class EpisodeDownloader:
         self.session = session
 
     async def run(self, ep: EpisodeInfo, info: StreamInfo) -> Optional[Path]:
-        key   = ep.session
+        key   = ep.ep_str  # Use episode number as stable key
         title = ep.title or info.title or f"Episode {ep.ep_str}"
         label = f"Ep {ep.ep_str} — {title}"
-        store = SegmentStore(self.anime_title, self.anime_session, ep.ep_str)
+        store = SegmentStore(self.anime_title, self.anime_session, ep.ep_str, ep.audio)
         loop  = asyncio.get_event_loop()
 
         # Save metadata for library view
@@ -1191,7 +1213,7 @@ class BatchDownloader:
 
     def _count_cached(self, ep: EpisodeInfo) -> int:
         """Count how many segments already exist in the cache for this episode."""
-        store = SegmentStore(self.anime.title, self.anime.session, ep.ep_str)
+        store = SegmentStore(self.anime.title, self.anime.session, ep.ep_str, ep.audio)
         return len(store.done_indices())
 
     def _find_existing(self, ep: EpisodeInfo) -> Optional[Path]:
@@ -1223,8 +1245,8 @@ class BatchDownloader:
         # Pre-populate dashboard
         for ep in episodes:
             label = f"Ep {ep.ep_str} — {ep.title or 'Pending...'}"
-            dash.add_ep(ep.session, label)
-            dash.mark_waiting(ep.session, label)
+            dash.add_ep(ep.ep_str, label)
+            dash.mark_waiting(ep.ep_str, label)
 
         # Queues
         # resolve_queue: Episodes needing stream info
@@ -1241,61 +1263,60 @@ class BatchDownloader:
         async def resolver() -> None:
             while not resolve_queue.empty():
                 raw_ep = await resolve_queue.get()
+                key    = raw_ep.ep_str
 
-                # 1. Selection: find variant that matches cfg.audio_lang.
+                # 1. Selection: prioritize variant that matches cfg.audio_lang.
                 variants = self.anime.get_all_variants(raw_ep.number)
-                ep = self.anime.get_variant(raw_ep.number, self.cfg.audio_lang) or variants[0]
-                if ep.audio != self.cfg.audio_lang:
-                    log.warning("Preferred audio %s not found for Ep %s, falling back to %s", self.cfg.audio_lang, raw_ep.number, ep.audio)
-                    dash.mark_done(raw_ep.session, f"Ep {raw_ep.ep_str} — {ep.audio.upper()} fallback")
+                ep = self.anime.get_variant(raw_ep.number, self.cfg.audio_lang)
+                
+                if not ep:
+                    # Fallback to whatever is available if preferred lang is missing
+                    ep = variants[0]
+                    if ep.audio != self.cfg.audio_lang:
+                        log.warning("Preferred audio %s not found for Ep %s, falling back to %s", self.cfg.audio_lang, raw_ep.number, ep.audio)
+                
+                # Clean title for dashboard (remove DUB/SUB suffixes)
+                display_title = re.sub(r"\s+\(?(?:dub|sub)\)?$", "", ep.title or "Episode " + ep.ep_str, flags=re.I).strip()
 
                 # 2. Failover: check if already downloaded
                 existing = await loop.run_in_executor(None, self._find_existing, ep)
 
                 if existing:
                     self._results[ep.session] = existing
-                    # Title extraction
-                    title = ep.title
-                    if not title or title == '?':
-                        with contextlib.suppress(Exception):
-                            t = existing.stem
-                            for sep in (' - ', '_-_'):
-                                if sep in t:
-                                    t = t.split(sep, 1)[-1]
-                                    break
-                            title = t.replace('_', ' ').strip()
-
-                    dash.add_ep(ep.session, f"Ep {ep.ep_str} — {title or 'Already exists'}")
-                    dash.mark_done(ep.session, f"Ep {ep.ep_str} (already exists)")
+                    dash.add_ep(key, f"Ep {ep.ep_str} — {display_title}")
+                    dash.mark_done(key, f"Ep {ep.ep_str} (already exists)")
                     resolve_queue.task_done()
                     continue
 
-                # 2. Extract stream
-                label = f"Ep {ep.ep_str} — {ep.title or 'Resolving...'}"
-                dash.mark_resolving(ep.session, label)
+                # 3. Extract stream
+                dash.mark_resolving(key, f"Ep {ep.ep_str} — Resolving...")
 
                 try:
                     info = await asyncio.wait_for(
                         loop.run_in_executor(
                             None, extract_stream, ep.play_url,
-                            self.cfg.quality, self.cfg.audio_lang,
+                            self.cfg.quality, self.cfg.audio_lang, # ALWAYS use user preference here
                         ),
                         timeout=120.0
                     )
+                    # Update episode metadata with what was actually found
+                    ep.audio = info.audio
                     if info.title and (not ep.title or ep.title == '?'):
                         ep.title = info.title
-
-                    real_label = f"Ep {ep.ep_str} — {ep.title or f'Episode {ep.ep_str}'}"
-                    dash.add_ep(ep.session, real_label)
-                    dash.mark_queued(ep.session, real_label)
+                    
+                    clean_label = re.sub(r"\s+\(?(?:dub|sub)\)?$", "", ep.title or f"Episode {ep.ep_str}", flags=re.I).strip()
+                    real_label = f"Ep {ep.ep_str} — {clean_label}"
+                    dash.add_ep(key, real_label)
+                    dash.mark_queued(key, real_label)
                     await download_queue.put((ep, info))
                 except asyncio.TimeoutError:
                     log.error("Resolution timed out for Ep %s", ep.ep_str)
-                    dash.mark_fail(ep.session, f"Ep {ep.ep_str}: Resolution Timeout")
+                    dash.mark_fail(key, f"Ep {ep.ep_str}: Resolution Timeout")
+                    # Ensure result is tracked for the actual variant session
                     self._results[ep.session] = None
                 except Exception as exc:
                     log.error("Failed to resolve Ep %s: %s", ep.ep_str, exc)
-                    dash.mark_fail(ep.session, f"Ep {ep.ep_str}: {exc!s:.35}")
+                    dash.mark_fail(key, f"Ep {ep.ep_str}: {exc!s:.35}")
                     self._results[ep.session] = None
 
                 resolve_queue.task_done()
@@ -1808,7 +1829,9 @@ def _confirm_download(anime: AnimeInfo, episodes: List[EpisodeInfo], cfg: Downlo
     reused_count = 0
     if anime.has_session:
         for ep in episodes:
-            store = SegmentStore(anime.title, anime.session, ep.ep_str)
+            # Check for preferred variant if available
+            target_ep = anime.get_variant(ep.number, cfg.audio_lang) or ep
+            store = SegmentStore(anime.title, anime.session, target_ep.ep_str, target_ep.audio)
             reused_count += len(store.done_indices())
 
     # Rough size estimate: 360p ~50 MB, 720p ~90 MB, 1080p ~150 MB
@@ -1816,10 +1839,7 @@ def _confirm_download(anime: AnimeInfo, episodes: List[EpisodeInfo], cfg: Downlo
     est_total  = n * est_mb_per
 
     # Show what audio will actually be downloaded (user's choice, not scanner label)
-    if cfg.audio_lang == "jpn":
-        audio_str = "[cyan]SUB[/cyan]  [dim](Japanese audio)[/dim]"
-    else:
-        audio_str = "[yellow]DUB[/yellow]  [dim](English audio)[/dim]"
+    audio_str = "[cyan]SUB[/cyan]" if cfg.audio_lang == "jpn" else "[yellow]DUB[/yellow]"
 
     stats = [
         f"  [dim]Series:[/dim]    [bold white]{anime.title}[/bold white]",
@@ -1975,26 +1995,8 @@ async def run_stream(
     loop = asyncio.get_event_loop()
 
     # ── Audio-lane selection ──────────────────────────────────────────────
-    # Offer SUB / DUB choice before the first episode plays.
-    # The chosen audio lane drives navigation (N/P stay in the same lane).
-    has_sub = any(e.audio == "jpn" for e in anime.episodes)
-    has_dub = any(e.audio == "eng" for e in anime.episodes)
-    audio_pref = cfg.audio_lang  # start with CLI / config preference
-
-    if interactive and prompt_audio and has_sub and has_dub:
-        console.print()
-        _aud_default = "1" if audio_pref == "jpn" else "2"
-        console.print(Panel(
-            "  [bold white]1[/bold white]  [cyan]Subbed[/cyan]   [dim](Japanese audio)[/dim]\n"
-            "  [bold white]2[/bold white]  [yellow]Dubbed[/yellow]   [dim](English audio)[/dim]",
-            title="[cyan]Select Audio Track[/cyan]",
-            border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
-        ))
-        _pick = Prompt.ask(
-            "  [cyan]Audio[/cyan]", choices=["1", "2"],
-            default=_aud_default, show_choices=False,
-        )
-        audio_pref = "jpn" if _pick == "1" else "eng"
+    # (Internal prompt removed: preference now comes from cfg.audio_lang)
+    audio_pref = cfg.audio_lang
 
     # ── Build ordered playlist for the selected audio lane ────────────────
     def _build_playlist(lang: str) -> List[EpisodeInfo]:
@@ -2072,22 +2074,23 @@ async def run_stream(
     while 0 <= idx < len(playlist):
         ep = playlist[idx]
         try:
-            # Resolve stream URL (pass ep.audio so extract_stream picks the right link)
+            # Resolve stream URL (pass audio_pref so extract_stream picks the right track)
             with Progress(
                 SpinnerColumn(),
                 TextColumn(
                     f"[bold white]({idx + 1}/{len(playlist)})"
                     f"  Resolving Ep [cyan]{ep.ep_str}[/cyan]"
-                    f"  {_audio_pill(ep.audio)}…"
+                    f"  {_audio_pill(audio_pref)}…"
                 ),
                 console=console, transient=True,
             ) as prog:
                 prog.add_task("", total=None)
                 info = await loop.run_in_executor(
-                    None, extract_stream, ep.play_url, cfg.quality, ep.audio,
+                    None, extract_stream, ep.play_url, cfg.quality, audio_pref,
                 )
 
-            # Update title metadata; never overwrite ep.audio (API scan is authoritative)
+            # Update metadata with actual findings
+            ep.audio = info.audio
             _clean_ep_title(ep, info)
             if info.fansub:
                 ep.fansub = info.fansub
@@ -2162,17 +2165,19 @@ async def run_stream(
             elif choice == "q":
                 break
             elif choice == "a":
-                # Switch the entire playlist to the other audio lane, keeping position
-                other_lang = "eng" if ep.audio == "jpn" else "jpn"
+                # Switch to the other audio track
+                other_lang = "eng" if audio_pref == "jpn" else "jpn"
+                
+                # Check if we should switch sessions (if a specific session for other lang exists)
                 if anime.get_variant(ep.number, other_lang):
                     audio_pref = other_lang
                     playlist   = _build_playlist(audio_pref)
-                    # idx stays the same — same episode, different lane
                     continue
                 else:
-                    alt_name = "DUB" if other_lang == "eng" else "SUB"
-                    console.print(f"  [red]✗ No {alt_name} variant available for this episode.[/red]")
-                    time.sleep(1)
+                    # Otherwise, just try to switch tracks within the current session
+                    # We'll let extract_stream handle the actual track finding
+                    audio_pref = other_lang
+                    continue
             elif choice == "s":
                 # Episode jump selector
                 console.print()
@@ -2182,15 +2187,13 @@ async def run_stream(
                 )
                 sel.add_column("#",     justify="right", style="dim", width=4)
                 sel.add_column("Ep",    justify="right", width=6)
-                sel.add_column("Audio", justify="center", width=5)
                 sel.add_column("Title", ratio=1)
 
                 for i, e in enumerate(playlist):
                     style   = "bold green" if i == idx else "dim"
                     pointer = "→ " if i == idx else "  "
-                    badge   = "[cyan]SUB[/cyan]" if e.audio == "jpn" else "[yellow]DUB[/yellow]"
                     sel.add_row(
-                        f"{pointer}{i + 1}", e.ep_str, badge, _display_title(e),
+                        f"{pointer}{i + 1}", e.ep_str, _display_title(e),
                         style=style,
                     )
 
@@ -2344,7 +2347,7 @@ class SessionManager:
 # 19.  INTERACTIVE WIZARD
 # ═════════════════════════════════════════════════════════════════════════
 
-def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
+def _wizard_config(defaults: DownloadConfig, mode: str = "download") -> DownloadConfig:
     console.print()
     console.print(Rule("[bold white] Download Settings [/bold white]", style="cyan"))
 
@@ -2371,28 +2374,33 @@ def _wizard_config(defaults: DownloadConfig) -> DownloadConfig:
         "  [cyan]Select audio[/cyan]", choices=["1", "2"], default=_audio_default, show_choices=False
     ) == "1" else "eng"
 
-    # Output directory
-    output_dir = Prompt.ask(
-        "  [cyan]Output directory[/cyan]", default=defaults.output_dir
-    ).strip()
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    output_dir = defaults.output_dir
+    max_parallel = defaults.max_parallel
+    hls_workers = defaults.hls_workers
 
-    # Concurrency
-    console.print(Panel(
-        "  [bold white]1[/bold white]  [dim]1 download   · safest[/dim]\n"
-        "  [bold white]2[/bold white]  [cyan]2 simultaneous  · recommended[/cyan]\n"
-        "  [bold white]4[/bold white]  [dim]4 simultaneous  · faster, more RAM[/dim]\n"
-        "  [bold white]6[/bold white]  [dim]6 simultaneous  · may trigger rate-limits[/dim]",
-        title="[cyan]Concurrent Downloads[/cyan]", border_style="dim cyan",
-        box=box.ROUNDED, padding=(0, 2),
-    ))
-    max_parallel = max(1, min(6, IntPrompt.ask(
-        "  [cyan]Select[/cyan]", default=defaults.max_parallel
-    )))
-    hls_workers = max(8, min(32, IntPrompt.ask(
-        "  [cyan]HLS workers per episode[/cyan] [dim](8–32, default 24)[/dim]",
-        default=defaults.hls_workers,
-    )))
+    if mode == "download":
+        # Output directory
+        output_dir = Prompt.ask(
+            "  [cyan]Output directory[/cyan]", default=defaults.output_dir
+        ).strip()
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Concurrency
+        console.print(Panel(
+            "  [bold white]1[/bold white]  [dim]1 download   · safest[/dim]\n"
+            "  [bold white]2[/bold white]  [cyan]2 simultaneous  · recommended[/cyan]\n"
+            "  [bold white]4[/bold white]  [dim]4 simultaneous  · faster, more RAM[/dim]\n"
+            "  [bold white]6[/bold white]  [dim]6 simultaneous  · may trigger rate-limits[/dim]",
+            title="[cyan]Concurrent Downloads[/cyan]", border_style="dim cyan",
+            box=box.ROUNDED, padding=(0, 2),
+        ))
+        max_parallel = max(1, min(6, IntPrompt.ask(
+            "  [cyan]Select[/cyan]", default=defaults.max_parallel
+        )))
+        hls_workers = max(8, min(32, IntPrompt.ask(
+            "  [cyan]HLS workers per episode[/cyan] [dim](8–32, default 24)[/dim]",
+            default=defaults.hls_workers,
+        )))
 
     return DownloadConfig(
         output_dir=output_dir, max_parallel=max_parallel,
@@ -2549,43 +2557,6 @@ async def _main(args: argparse.Namespace) -> None:
 
             mode = {"1": "download", "2": "export", "3": "stream"}[choice]
 
-        # ── Stream audio pre-selection (before episode picker) ────────────
-        if mode == "stream" and not _scripted:
-            _s_has_sub = any(e.audio == "jpn" for e in anime.episodes)
-            _s_has_dub = any(e.audio == "eng" for e in anime.episodes)
-
-            # Build panel lines — dim/mark whichever variant isn't available
-            _sub_line = (
-                "  [bold white]1[/bold white]  [cyan]SUB[/cyan]   [dim](Japanese audio — subtitled)[/dim]"
-                if _s_has_sub else
-                "  [dim]1  SUB   (not available)[/dim]"
-            )
-            _dub_line = (
-                "  [bold white]2[/bold white]  [yellow]DUB[/yellow]   [dim](English audio — dubbed)[/dim]"
-                if _s_has_dub else
-                "  [dim]2  DUB   (not available)[/dim]"
-            )
-            console.print()
-            console.print(Panel(
-                f"{_sub_line}\n{_dub_line}",
-                title="[cyan]Select Audio[/cyan]",
-                border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
-            ))
-
-            if _s_has_sub and _s_has_dub:
-                _aud_default = "1" if _stream_audio_lang == "jpn" else "2"
-                _pick = Prompt.ask(
-                    "  [cyan]Audio[/cyan]", choices=["1", "2"],
-                    default=_aud_default, show_choices=False,
-                )
-                _stream_audio_lang = "jpn" if _pick == "1" else "eng"
-            elif _s_has_dub:
-                console.print("  [dim]Only DUB available — selecting automatically.[/dim]")
-                _stream_audio_lang = "eng"
-            else:
-                console.print("  [dim]Only SUB available — selecting automatically.[/dim]")
-                _stream_audio_lang = "jpn"
-
         # ── Episode selection ─────────────────────────────────────────────
         if args.all:
             chosen = noninteractive_episodes(anime, "all")
@@ -2618,9 +2589,9 @@ async def _main(args: argparse.Namespace) -> None:
                 audio_lang=args.audio_lang,
             )
         else:
-            # Interactive: run the settings wizard (for download; stream/export get a lighter config)
+            # Interactive: run the settings wizard for the selected mode
             _defaults = DownloadConfig(output_dir=series_dir, quality=args.quality, audio_lang=args.audio_lang)
-            cfg = _wizard_config(_defaults) if mode == "download" else _defaults
+            cfg = _wizard_config(_defaults, mode=mode)
 
         # ── Mode dispatch ─────────────────────────────────────────────────
         if mode == "export":
@@ -2629,13 +2600,9 @@ async def _main(args: argparse.Namespace) -> None:
                 break
 
         elif mode == "stream":
-            # Audio lane already chosen before episode selection (interactive) or via
-            # --audio flag (scripted). Pass prompt_audio=False so run_stream doesn't ask again.
-            stream_cfg = DownloadConfig(
-                quality=cfg.quality, stream_mode=True,
-                audio_lang=_stream_audio_lang, output_dir=series_dir,
-            )
-            await run_stream(anime, chosen, stream_cfg, interactive=not _scripted, prompt_audio=False)
+            # Audio lane already chosen via wizard or --audio flag.
+            # Pass prompt_audio=False so run_stream doesn't ask again.
+            await run_stream(anime, chosen, cfg, interactive=not _scripted, prompt_audio=False)
             if _scripted:
                 break
 
