@@ -191,13 +191,11 @@ async def run_stream(
                     prompt_parts.append("[bold](N)[/bold]ext")
                     ui_options.append("[green]N[/green]ext")
 
-                other_lang = "eng" if ep.audio == "jpn" else "jpn"
-                has_alt = anime.get_variant(ep.number, other_lang) is not None
-                if has_alt:
-                    valid_choices.insert(0, "a")
-                    prompt_parts.append("[bold](A)[/bold]udio")
-                    alt_name = "DUB" if other_lang == "eng" else "SUB"
-                    ui_options.append(f"[yellow]A[/yellow]udio\u2192{alt_name}")
+                valid_choices.insert(0, "a")
+                prompt_parts.append("[bold](A)[/bold]udio")
+                other_lang = "eng" if audio_pref == "jpn" else "jpn"
+                alt_name = "DUB" if other_lang == "eng" else "SUB"
+                ui_options.append(f"[yellow]A[/yellow]udio\u2192{alt_name}")
 
                 ui_options += ["[white]R[/white]eplay", "[magenta]S[/magenta]elect", "[red]Q[/red]uit"]
                 prompt_parts += ["[bold](R)[/bold]eplay", "[bold](S)[/bold]elect", "[bold](Q)[/bold]uit"]
