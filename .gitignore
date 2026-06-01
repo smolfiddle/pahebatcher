@@ -10,27 +10,21 @@ __pycache__/
 
 # Testing
 .pytest_cache/
-.pytest_cache/
 .coverage
 htmlcov/
 
-# Project Specific
-pahe_batcher.db
-pahe_batcher.db-wal
-pahe_batcher.db-shm
-.pahe_staging_*.db
-.pahe_staging_*.db-wal
-.pahe_staging_*.db-shm
-pahe_vault.db
+# Project Output
 downloads/
-pb_*.ts
+
+# Session Cache
+pahe_cache/
+
+# Build Artifacts
+src/*.egg-info/
+*.egg-info/
+dist/
+build/
 
 # IDEs
 .vscode/
 .idea/
-
-# Pahe-Batcher Cache
-pahe_cache/
-
-# Build artifacts
-src/*.egg-info/
