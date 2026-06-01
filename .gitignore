@@ -10,7 +10,9 @@ __pycache__/
 
 # Testing
 .pytest_cache/
-tests/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Project Specific
 pahe_batcher.db
@@ -29,3 +31,6 @@ pb_*.ts
 
 # Pahe-Batcher Cache
 pahe_cache/
+
+# Build artifacts
+src/*.egg-info/
