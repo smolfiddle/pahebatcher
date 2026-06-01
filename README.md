@@ -42,8 +42,6 @@ Most anime downloaders fall into two camps: generalists that sacrifice per-site 
 
 Pahebatcher is not a general-purpose downloader. If you need 1000+ sites, use yt-dlp. If you primarily use AnimePahe and want the fastest possible batch download with the best crash safety and terminal UI, use pahebatcher.
 
-For a full competitive analysis, see [ASSESSMENT.md](ASSESSMENT.md).
-
 ---
 
 ## Prerequisites
