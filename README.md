@@ -16,21 +16,28 @@ High-performance terminal tool for [AnimePahe](https://animepahe.pw). Automates 
 ```bash
 git clone https://github.com/smolfiddle/pahebatcher.git
 cd pahebatcher
-pip install -e ".[dev]"
 ```
 
-Or just the tool without dev deps:
+### Option A: Makefile (zero-config)
 
 ```bash
-pip install -e .
+make run      # auto-creates venv, installs, launches
+make test     # run tests
+make lint     # ruff check
 ```
 
-Then run:
+### Option B: pipx (global install)
 
 ```bash
+pipx install .
 pahebatcher
-# or
-python -m pahebatcher
+```
+
+### Option C: pip editable (dev)
+
+```bash
+pip install -e ".[dev]"
+pahebatcher
 ```
 
 ## Python Dependencies
@@ -154,16 +161,16 @@ src/pahebatcher/
 ## Development
 
 ```bash
-# Install with dev dependencies
+# Option A: Makefile
+make test       # run tests
+make lint       # ruff check
+make typecheck  # mypy strict
+make clean      # remove venv + cache
+
+# Option B: manual
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/ -v
-
-# Lint
 ruff check src/
-
-# Type check
 mypy src/
 ```
 
