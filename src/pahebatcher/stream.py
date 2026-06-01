@@ -222,11 +222,9 @@ async def run_stream(
                 break
             elif choice == "a":
                 other_lang = "eng" if audio_pref == "jpn" else "jpn"
-                if anime.get_variant(ep.number, other_lang):
-                    audio_pref = other_lang
-                    playlist = _build_playlist(audio_pref)
-                else:
-                    audio_pref = other_lang
+                audio_pref = other_lang
+                playlist = _build_playlist(audio_pref)
+                idx = max(0, min(idx, len(playlist) - 1))
                 continue
             elif choice == "s":
                 console.print()
