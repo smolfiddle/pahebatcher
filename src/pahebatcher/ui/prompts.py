@@ -212,6 +212,10 @@ def wizard_config(defaults: AppContext, mode: str = "download") -> AppContext:
 
     console.print()
     console.print(Rule("[bold white] Download Settings [/bold white]", style="cyan"))
+    console.print(
+        "  [dim]Settings are saved to [bold]pahebatcher.toml[/bold] and reused on future runs.[/dim]\n"
+        "  [dim]After this setup, run [bold]pahebatcher config set KEY VALUE[/bold] to change defaults.[/dim]\n"
+    )
 
     q_default = {360: "1", 720: "2", 1080: "3"}.get(defaults.quality, "3")
     console.print(Panel(
