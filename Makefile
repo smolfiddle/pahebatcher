@@ -17,7 +17,7 @@ help: install
 	@echo "  $(PYTHON) -m pahebatcher config reset"
 	@echo ""
 	@echo "Dev:"
-	@echo "  make test         run 97 tests"
+	@echo "  make test         run 98 tests"
 	@echo "  make lint         ruff check"
 	@echo "  make typecheck    mypy strict"
 	@echo "  make clean        remove venv + caches"

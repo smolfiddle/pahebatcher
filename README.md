@@ -73,7 +73,7 @@ cd pahebatcher
 ```bash
 make run          # auto-creates venv, installs, launches wizard
 make config-show  # display current settings
-make test         # run all 97 tests
+make test         # run all 98 tests
 make lint         # ruff check
 make typecheck    # mypy strict
 make help         # show all targets
@@ -384,7 +384,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 97 tests, asyncio auto-mode
+pytest tests/ -v              # 98 tests, asyncio auto-mode
 ruff check src/               # ALL rule select, target py311
 mypy src/                     # strict mode, full type coverage
 ```
@@ -395,7 +395,7 @@ mypy src/                     # strict mode, full type coverage
 tests/
     conftest.py               Fixtures: mock solver, mock http, sample data
     test_cache.py             8 tests: set/get, eviction, expiry, concurrent access
-    test_config_manager.py    9 tests: defaults, save/load, validation, clamping
+    test_config_manager.py    10 tests: defaults, save/load, validation, clamping, existence
     test_kwik.py              7 tests: JsPacker, M3U8 extraction, resolution buttons
     test_m3u8.py              8 tests: playlist parsing, AES keys, variant detection
     test_models.py            11 tests: dataclass fields, properties, edge cases
@@ -442,7 +442,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (97 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (98 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 

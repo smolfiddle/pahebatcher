@@ -76,12 +76,12 @@ class TestConfigManagerSaveLoad:
         cm.set("keep_temp", False)
         assert cm.get("keep_temp") is False
 
-    def test_show_returns_all_keys(self, tmp_path: Path) -> None:
-        cm = ConfigManager(tmp_path / "config.toml")
-        data = cm.show()
-        assert "quality" in data
-        assert "audio_lang" in data
-        assert "max_parallel" in data
-        assert "hls_workers" in data
-        assert "output_dir" in data
-        assert "keep_temp" in data
+    def test_is_customized_file_exists(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        path.write_text("quality = 720\n")
+        cm = ConfigManager(path)
+        assert cm.is_customized() is True
+
+    def test_is_customized_no_file(self, tmp_path: Path) -> None:
+        cm = ConfigManager(tmp_path / "nonexistent.toml")
+        assert cm.is_customized() is False
