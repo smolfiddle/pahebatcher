@@ -54,8 +54,8 @@ class ConfigManager:
         return dict(self.data)
 
     def is_customized(self) -> bool:
-        """Return True if any setting differs from factory defaults."""
-        return any(self.data.get(k) != v for k, v in self.DEFAULTS.items())
+        """Return True if config file exists (user has completed first-run setup)."""
+        return self.path.exists()
 
     # ── CLI interface ──────────────────────────────────────────────────────
 
