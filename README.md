@@ -15,6 +15,11 @@ High-performance terminal tool for batch-downloading and streaming anime from [A
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Feature Tour](#feature-tour)
+  - [Download Mode](#download-mode)
+  - [Stream Mode](#stream-mode)
+  - [Session Manager](#session-manager)
+  - [Search Mode](#search-mode)
+  - [Configuration](#configuration)
 - [CLI Reference](#cli-reference)
 - [Architecture](#architecture)
 - [Package Structure](#package-structure)
@@ -38,6 +43,7 @@ Key characteristics:
 - **Rich terminal UI.** Progress dashboard shows all episodes simultaneously with per-episode segment counts, transfer speeds, ETAs, file sizes, and color-coded state transitions. Interactive episode selection includes range input, a toggle checklist, and "latest N" mode.
 - **MPV streaming.** Episodes can be streamed directly without downloading. A live playback panel shows the current episode and playlist position. Audio tracks can be toggled between SUB and DUB mid-session.
 - **Session management.** Previous download sessions can be resumed, deleted, or cleared from the cache. Cached segments are reused on restart.
+- **Persistent configuration.** Quality, audio, concurrency, and output directory are saved to `~/.config/pahebatcher/config.toml`. Set once via the interactive wizard or `pahebatcher config set`, reused on every subsequent run. CLI flags override persisted values when needed.
 - **MIT licensed.** Free to use, modify, and redistribute.
 
 ---
@@ -66,7 +72,7 @@ cd pahebatcher
 
 ```bash
 make run        # auto-creates venv, installs dependencies, launches interactive wizard
-make test       # run all 88 tests
+make test       # run all 97 tests
 make lint       # ruff check
 make typecheck  # mypy strict
 ```
@@ -113,6 +119,9 @@ pahebatcher "https://animepahe.ru/anime/<uuid>" --stream -q 1080
 # Maximum throughput: 4 concurrent episodes, 32 HLS workers per episode
 pahebatcher "https://animepahe.ru/anime/<uuid>" --all -q 1080 -j 4 -w 32
 
+# Save default preferences so you don't need flags every time
+pahebatcher config set quality 720
+
 # Enable debug logging for troubleshooting
 pahebatcher "https://animepahe.ru/anime/<uuid>" --all --verbose
 ```
@@ -137,12 +146,7 @@ The core workflow: scan a series, select episodes, configure settings, download.
 | Latest N | `--latest 3` | Press `N` | Grab the most recent N episodes |
 | Skip | — | Press `S` | Return to action menu without selecting |
 
-**Settings wizard** (interactive mode only) prompts for:
-- Quality (360p / 720p / 1080p) with estimated size per episode
-- Audio language (SUB Japanese / DUB English)
-- Output directory
-- Concurrency: number of simultaneous episode downloads (1-6)
-- HLS segment workers per episode (8-32)
+**Settings wizard** (interactive mode only) prompts for quality, audio language, output directory, and concurrency. Choices are automatically persisted to `~/.config/pahebatcher/config.toml` and reused on future runs — run the wizard once, no need to reconfigure on subsequent sessions.
 
 **Download dashboard** shows every episode simultaneously with live per-episode metrics: segment counter (M of N), percentage, transfer speed, ETA, and file size. Each episode transitions through color-coded states: resolving (cyan) -> queued (dim cyan) -> downloading (bold white) -> remuxing (yellow) -> done (green checkmark) / fail (red cross).
 
@@ -175,6 +179,35 @@ Accessible from the main menu (option 3). Lists all cached sessions with:
 
 Running `pahebatcher` without a URL opens interactive search. Type an anime title, browse results in a table (title, type, year, episodes, score), select by number. The tool auto-discovers SUB and DUB variants of the selected series.
 
+### Configuration
+
+Settings are persisted at `~/.config/pahebatcher/config.toml` and loaded on every run. The interactive wizard saves choices automatically — run it once, and subsequent sessions use your saved preferences without prompts.
+
+CLI flags override persisted values. Use `--quality 1080` for a one-off high-quality download without changing the default.
+
+Manage settings from the command line:
+
+```bash
+pahebatcher config show                 # display current values
+pahebatcher config set quality 720      # set default quality
+pahebatcher config set audio_lang eng   # set default audio to DUB
+pahebatcher config set max_parallel 4   # set default concurrency
+pahebatcher config set hls_workers 16   # set default segment workers
+pahebatcher config set output_dir ~/anime  # set default output directory
+pahebatcher config reset                # restore all defaults
+```
+
+Supported keys and their valid values:
+
+| Key | Type | Values |
+|---|---|---|
+| `quality` | integer | `360`, `720`, `1080` |
+| `audio_lang` | string | `jpn`, `eng` |
+| `max_parallel` | integer | `1`–`6` |
+| `hls_workers` | integer | `8`–`32` |
+| `output_dir` | string | Any valid path |
+| `keep_temp` | boolean | `true`, `false` |
+
 ---
 
 ## CLI Reference
@@ -204,6 +237,14 @@ pahebatcher [URL] [options]
 | `--workers N` | `-w N` | HLS segment fetchers per episode (8-32) | `24` |
 | `--keep-temp` | — | Keep raw `.ts` files after muxing | off |
 | `--verbose` | `-v` | Enable debug-level logging | off |
+
+### Configuration commands
+
+| Command | Description |
+|---|---|
+| `pahebatcher config show` | Display all settings with current values and defaults |
+| `pahebatcher config set KEY VALUE` | Persist a setting (see Configuration section for key list) |
+| `pahebatcher config reset` | Restore all settings to factory defaults |
 
 ### Concurrency tuning
 
@@ -325,7 +366,7 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 88 tests
+make test        # run all 97 tests
 make lint        # ruff check
 make typecheck   # mypy strict
 make clean       # remove venv, caches, build artifacts
@@ -335,7 +376,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 88 tests, asyncio auto-mode
+pytest tests/ -v              # 97 tests, asyncio auto-mode
 ruff check src/               # ALL rule select, target py311
 mypy src/                     # strict mode, full type coverage
 ```
@@ -346,6 +387,7 @@ mypy src/                     # strict mode, full type coverage
 tests/
     conftest.py               Fixtures: mock solver, mock http, sample data
     test_cache.py             8 tests: set/get, eviction, expiry, concurrent access
+    test_config_manager.py    9 tests: defaults, save/load, validation, clamping
     test_kwik.py              7 tests: JsPacker, M3U8 extraction, resolution buttons
     test_m3u8.py              8 tests: playlist parsing, AES keys, variant detection
     test_models.py            11 tests: dataclass fields, properties, edge cases
@@ -392,7 +434,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (88 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (97 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 
