@@ -30,6 +30,12 @@ $(VENV):
 install: $(VENV)
 
 run: install
+	@if [ -f pahebatcher.toml ]; then \
+		$(PYTHON) -c "from pahebatcher.config_manager import ConfigManager; c=ConfigManager(); c.load(); a='SUB' if c.get('audio_lang')=='jpn' else 'DUB'; print(f'  Config: {a}  {c.get(\"quality\")}p  ({c.get(\"max_parallel\")} concurrent)  —  make config-show for all')"; \
+	else \
+		echo "  First run — settings will be saved after the wizard."; \
+	fi
+	@echo ""
 	$(PYTHON) -m pahebatcher
 
 config-show: install
