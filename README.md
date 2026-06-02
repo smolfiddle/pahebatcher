@@ -1,6 +1,6 @@
 # pahebatcher
 
-High-performance terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, a Rich-powered live dashboard, and the only MPV streaming mode with mid-playback SUB/DUB switching among all CLI anime tools.
+High-performance terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
 ![Version](https://img.shields.io/badge/version-3.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -10,7 +10,7 @@ High-performance terminal tool for batch-downloading and streaming anime from [A
 
 ## Table of Contents
 
-- [Why pahebatcher](#why-pahebatcher)
+- [About](#about)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -25,22 +25,20 @@ High-performance terminal tool for batch-downloading and streaming anime from [A
 
 ---
 
-## Why pahebatcher
+## About
 
-Most anime downloaders fall into two camps: generalists that sacrifice per-site performance (yt-dlp, animdl) or shell scripts with no crash safety (ani-cli). Pahebatcher is a specialist instrument — it only targets AnimePahe, and for that one site it is the fastest, safest, and richest experience available.
+Pahebatcher is a terminal application for batch-downloading anime from [AnimePahe](https://animepahe.pw). It supports parallel episode downloads with per-episode HLS segment concurrency, segment-level crash recovery, interactive episode selection, and MPV streaming with mid-playback audio track switching.
 
-| Capability | yt-dlp | ani-cli | animdl | animepahe-cli | Shinkansen | **pahebatcher** |
-|---|---|---|---|---|---|---|
-| Segment-level crash resume | No | No | No | No | No | **Yes** |
-| Concurrent episodes + concurrent segments | No | No | No | No | Partial | **Yes (144 streams)** |
-| Per-episode live progress dashboard | No | No | No | No | No | **Yes** |
-| MPV streaming with SUB/DUB toggle | No | Partial | No | No | No | **Yes** |
-| Interactive episode checklist | No | No | No | No | No | **Yes** |
-| Self-hosted (no proxy dependency) | Yes | Yes | Yes | No | Yes | **Yes** |
-| MIT license | Yes | No | No | No | Yes | **Yes** |
-| mypy strict / ruff ALL / 88 tests | No | No | No | No | No | **Yes** |
+Key characteristics:
 
-Pahebatcher is not a general-purpose downloader. If you need 1000+ sites, use yt-dlp. If you primarily use AnimePahe and want the fastest possible batch download with the best crash safety and terminal UI, use pahebatcher.
+- **Single-site focus.** Pahebatcher targets AnimePahe exclusively and does not support other sources.
+- **Self-hosted infrastructure.** Cloudflare bypass uses a local FlareSolverr instance via Docker. All traffic stays on your machine — no third-party proxies.
+- **Crash-safe downloads.** HLS segments are written atomically. A mid-download interruption picks up at the exact segment where it left off, without re-downloading completed work.
+- **Concurrent pipeline.** A two-stage prefetch architecture resolves stream URLs ahead of downloaders via an `asyncio.Queue`, eliminating idle time between episodes. Episodes download in parallel (configurable 1–6), with per-episode segment concurrency (configurable 8–32).
+- **Rich terminal UI.** Progress dashboard shows all episodes simultaneously with per-episode segment counts, transfer speeds, ETAs, file sizes, and color-coded state transitions. Interactive episode selection includes range input, a toggle checklist, and "latest N" mode.
+- **MPV streaming.** Episodes can be streamed directly without downloading. A live playback panel shows the current episode and playlist position. Audio tracks can be toggled between SUB and DUB mid-session.
+- **Session management.** Previous download sessions can be resumed, deleted, or cleared from the cache. Cached segments are reused on restart.
+- **MIT licensed.** Free to use, modify, and redistribute.
 
 ---
 
@@ -161,7 +159,7 @@ Launches MPV with the resolved M3U8 URL and authentication headers. Displays a l
 - `S` — jump to any episode by number
 - `Q` — quit
 
-No other CLI anime tool offers mid-stream audio switching or a post-playback control panel.
+Post-episode controls appear after MPV closes, offering navigation, audio switching, replay, and episode selection.
 
 ### Session Manager
 
