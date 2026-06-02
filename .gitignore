@@ -16,6 +16,9 @@ htmlcov/
 # Project Output
 downloads/
 
+# Config
+pahebatcher.toml
+
 # Session Cache
 pahe_cache/
 

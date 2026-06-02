@@ -43,7 +43,7 @@ Key characteristics:
 - **Rich terminal UI.** Progress dashboard shows all episodes simultaneously with per-episode segment counts, transfer speeds, ETAs, file sizes, and color-coded state transitions. Interactive episode selection includes range input, a toggle checklist, and "latest N" mode.
 - **MPV streaming.** Episodes can be streamed directly without downloading. A live playback panel shows the current episode and playlist position. Audio tracks can be toggled between SUB and DUB mid-session.
 - **Session management.** Previous download sessions can be resumed, deleted, or cleared from the cache. Cached segments are reused on restart.
-- **Persistent configuration.** Quality, audio, concurrency, and output directory are saved to `~/.config/pahebatcher/config.toml`. Set once via the interactive wizard or `pahebatcher config set`, reused on every subsequent run. CLI flags override persisted values when needed.
+- **Persistent configuration.** Quality, audio, concurrency, and output directory are saved to `pahebatcher.toml` in the project directory. Set once via the interactive wizard or `pahebatcher config set`, reused on every subsequent run. CLI flags override persisted values when needed. Edit the file directly or use the `config` subcommand.
 - **MIT licensed.** Free to use, modify, and redistribute.
 
 ---
@@ -156,7 +156,7 @@ The core workflow: scan a series, select episodes, configure settings, download.
 | Latest N | `--latest 3` | Press `N` | Grab the most recent N episodes |
 | Skip | — | Press `S` | Return to action menu without selecting |
 
-**Settings wizard** (interactive mode only) prompts for quality, audio language, output directory, and concurrency. Choices are automatically persisted to `~/.config/pahebatcher/config.toml` and reused on future runs — run the wizard once, no need to reconfigure on subsequent sessions.
+**Settings wizard** (interactive mode only) prompts for quality, audio language, output directory, and concurrency. Choices are automatically persisted to `pahebatcher.toml` and reused on future runs — run the wizard once, no need to reconfigure on subsequent sessions.
 
 **Download dashboard** shows every episode simultaneously with live per-episode metrics: segment counter (M of N), percentage, transfer speed, ETA, and file size. Each episode transitions through color-coded states: resolving (cyan) -> queued (dim cyan) -> downloading (bold white) -> remuxing (yellow) -> done (green checkmark) / fail (red cross).
 
@@ -191,7 +191,7 @@ Running `pahebatcher` without a URL opens interactive search. Type an anime titl
 
 ### Configuration
 
-Settings are persisted at `~/.config/pahebatcher/config.toml` and loaded on every run. There are three ways to set them, and they compose as follows: **saved defaults apply to every session, CLI flags override them when needed, and the interactive wizard auto-saves whatever you choose.**
+Settings are persisted at `pahebatcher.toml` in the current directory and loaded on every run. There are three ways to set them, and they compose as follows: **saved defaults apply to every session, CLI flags override them when needed, and the interactive wizard auto-saves whatever you choose.**
 
 Manage settings from the command line:
 

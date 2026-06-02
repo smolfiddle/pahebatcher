@@ -9,9 +9,9 @@ from typing import Any
 
 
 class ConfigManager:
-    """Read/write persistent settings at ~/.config/pahebatcher/config.toml."""
+    """Read/write persistent settings at ./pahebatcher.toml (project root)."""
 
-    DEFAULT_PATH = Path.home() / ".config" / "pahebatcher" / "config.toml"
+    DEFAULT_PATH = Path("pahebatcher.toml")
 
     DEFAULTS: dict[str, Any] = {
         "quality": 1080,
@@ -36,7 +36,6 @@ class ConfigManager:
                 self.data[key] = loaded[key]
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = ["# pahebatcher configuration", ""]
         for key, default in self.DEFAULTS.items():
             val = self.data.get(key, default)
