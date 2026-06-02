@@ -249,6 +249,11 @@ async def run(args: argparse.Namespace) -> None:
                         flaresolverr_url=flaresolverr_url,
                     )
                 elif cm.is_customized():
+                    audio_badge_text = "[cyan]SUB[/cyan]" if audio_lang == "jpn" else "[yellow]DUB[/yellow]"
+                    console.print(
+                        f"\n  [dim]Using saved settings from pahebatcher.toml:"
+                        f"  {audio_badge_text}  {quality}p  {parallel} concurrent  {workers} workers[/dim]\n"
+                    )
                     ctx = AppContext(
                         output_dir=default_output, cache_dir=cache_dir,
                         quality=quality, audio_lang=audio_lang,
@@ -272,6 +277,7 @@ async def run(args: argparse.Namespace) -> None:
                     cm.set("hls_workers", ctx.hls_workers)
                     try:
                         cm.save()
+                        console.print("  [dim]Settings saved to [bold]pahebatcher.toml[/bold][/dim]\n")
                     except Exception:
                         pass
 
