@@ -181,9 +181,7 @@ Running `pahebatcher` without a URL opens interactive search. Type an anime titl
 
 ### Configuration
 
-Settings are persisted at `~/.config/pahebatcher/config.toml` and loaded on every run. The interactive wizard saves choices automatically — run it once, and subsequent sessions use your saved preferences without prompts.
-
-CLI flags override persisted values. Use `--quality 1080` for a one-off high-quality download without changing the default.
+Settings are persisted at `~/.config/pahebatcher/config.toml` and loaded on every run. There are three ways to set them, and they compose as follows: **saved defaults apply to every session, CLI flags override them when needed, and the interactive wizard auto-saves whatever you choose.**
 
 Manage settings from the command line:
 

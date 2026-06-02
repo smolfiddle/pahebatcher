@@ -1,7 +1,26 @@
 VENV := venv
 PYTHON := $(VENV)/bin/python
 
-.PHONY: install run test lint typecheck clean
+.PHONY: help install run config-show test lint typecheck clean
+
+help: install
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Run:"
+	@echo "  make run          launch interactive wizard"
+	@echo "  make config-show  display current settings"
+	@echo ""
+	@echo "Config (set once, reused every session):"
+	@echo "  $(PYTHON) -m pahebatcher config set quality 720"
+	@echo "  $(PYTHON) -m pahebatcher config set audio_lang eng"
+	@echo "  $(PYTHON) -m pahebatcher config set max_parallel 4"
+	@echo "  $(PYTHON) -m pahebatcher config reset"
+	@echo ""
+	@echo "Dev:"
+	@echo "  make test         run 97 tests"
+	@echo "  make lint         ruff check"
+	@echo "  make typecheck    mypy strict"
+	@echo "  make clean        remove venv + caches"
 
 $(VENV):
 	python3 -m venv $(VENV)
@@ -12,6 +31,9 @@ install: $(VENV)
 
 run: install
 	$(PYTHON) -m pahebatcher
+
+config-show: install
+	$(PYTHON) -m pahebatcher config show
 
 test: install
 	$(PYTHON) -m pytest tests/ -v
