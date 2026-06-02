@@ -71,10 +71,20 @@ cd pahebatcher
 ### Option A: Makefile (zero-config)
 
 ```bash
-make run        # auto-creates venv, installs dependencies, launches interactive wizard
-make test       # run all 97 tests
-make lint       # ruff check
-make typecheck  # mypy strict
+make run          # auto-creates venv, installs, launches wizard
+make config-show  # display current settings
+make test         # run all 97 tests
+make lint         # ruff check
+make typecheck    # mypy strict
+make help         # show all targets
+```
+
+After first run, set persistent defaults:
+
+```bash
+make config-show
+venv/bin/python -m pahebatcher config set quality 720
+venv/bin/python -m pahebatcher config set audio_lang eng
 ```
 
 ### Option B: pipx (isolated global install)
