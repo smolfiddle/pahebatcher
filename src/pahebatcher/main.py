@@ -19,6 +19,7 @@ from rich.rule import Rule
 from rich.table import Table
 
 from pahebatcher.config import HLS_WORKERS, VERSION
+from pahebatcher.config_manager import ConfigManager
 from pahebatcher.downloader import BatchOrchestrator
 from pahebatcher.extract.scanner import AnimePaheScanner, parse_anime_url
 from pahebatcher.http import HttpClient
@@ -53,8 +54,23 @@ def build_parser() -> argparse.ArgumentParser:
             "  %(prog)s https://animepahe.ru/anime/<uuid> --list                 # list only\n"
             "  %(prog)s https://animepahe.ru/anime/<uuid> --audio eng --all      # dubbed\n"
             "  %(prog)s https://animepahe.ru/anime/<uuid> -s                     # stream\n"
+            "\n"
+            "Configuration:\n"
+            "  %(prog)s config show                                               # view settings\n"
+            "  %(prog)s config set quality 720                                    # save default quality\n"
+            "  %(prog)s config reset                                              # reset to defaults\n"
         ),
     )
+
+    sub = parser.add_subparsers(dest="command")
+    cfg = sub.add_parser("config", help="Manage persistent configuration")
+    cfg_sub = cfg.add_subparsers(dest="config_action")
+    cfg_sub.add_parser("show", help="Show current configuration")
+    set_p = cfg_sub.add_parser("set", help="Set a configuration value")
+    set_p.add_argument("key", choices=["quality", "audio_lang", "max_parallel", "hls_workers", "output_dir", "keep_temp"])
+    set_p.add_argument("value")
+    cfg_sub.add_parser("reset", help="Reset all settings to defaults")
+
     parser.add_argument("url", metavar="URL", nargs="?", help="AnimePahe series URL")
     sel = parser.add_mutually_exclusive_group()
     sel.add_argument("--all", "-a", action="store_true", help="Download every episode")
@@ -63,12 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
     sel.add_argument("--stream", "-s", action="store_true", help="Stream episodes via MPV")
     parser.add_argument("--list", "-l", action="store_true", dest="list_only", help="List episodes and exit")
     parser.add_argument("-o", "--output", default="./downloads", help="Output directory")
-    parser.add_argument("-q", "--quality", metavar="Q", type=int, choices=[360, 720, 1080], default=1080,
+    parser.add_argument("-q", "--quality", metavar="Q", type=int, choices=[360, 720, 1080], default=None,
                         help="Quality: 360, 720, or 1080")
-    parser.add_argument("--audio", metavar="LANG", type=str, choices=["jpn", "eng"], default="jpn",
+    parser.add_argument("--audio", metavar="LANG", type=str, choices=["jpn", "eng"], default=None,
                         dest="audio_lang", help="Audio: jpn=subbed, eng=dubbed")
-    parser.add_argument("-j", "--parallel", metavar="N", type=int, default=2, help="Concurrent downloads (1-6)")
-    parser.add_argument("-w", "--workers", metavar="N", type=int, default=HLS_WORKERS,
+    parser.add_argument("-j", "--parallel", metavar="N", type=int, default=None, help="Concurrent downloads (1-6)")
+    parser.add_argument("-w", "--workers", metavar="N", type=int, default=None,
                         help="HLS segment workers per episode (8-32)")
     parser.add_argument("--keep-temp", action="store_true", help="Keep raw segment files")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
@@ -76,13 +92,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> None:
+    # ── Config subcommand (no FlareSolverr needed) ──────────────────────────
+    if args.command == "config":
+        if args.config_action == "show":
+            ConfigManager.cli_show()
+        elif args.config_action == "set":
+            ConfigManager.cli_set(args.key, args.value)
+        elif args.config_action == "reset":
+            ConfigManager.cli_reset()
+        return
+
+    # ── Load persistent config as defaults (CLI args override) ──────────────
+    cm = ConfigManager()
+    cm.load()
+
     print_banner()
 
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    parallel = max(1, min(6, args.parallel))
-    workers = max(8, min(32, args.workers))
+    quality = args.quality if args.quality is not None else int(cm.get("quality"))
+    audio_lang = args.audio_lang if args.audio_lang is not None else str(cm.get("audio_lang"))
+    parallel = args.parallel if args.parallel is not None else int(cm.get("max_parallel"))
+    workers = args.workers if args.workers is not None else int(cm.get("hls_workers"))
+    parallel = max(1, min(6, parallel))
+    workers = max(8, min(32, workers))
     flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
     cache_dir = Path("pahe_cache")
 
@@ -120,7 +154,7 @@ async def run(args: argparse.Namespace) -> None:
 
             # Scan
             scanner = AnimePaheScanner(solver, host, session)
-            anime = await scanner.scan(cache_dir, prefer_audio=args.audio_lang)
+            anime = await scanner.scan(cache_dir, prefer_audio=audio_lang)
 
             badge = " [bold yellow][PARTIAL DOWNLOAD FOUND][/bold yellow]" if anime.has_session else ""
             console.print(
@@ -209,7 +243,7 @@ async def run(args: argparse.Namespace) -> None:
                 if _scripted:
                     ctx = AppContext(
                         output_dir=default_output, cache_dir=cache_dir,
-                        quality=args.quality, audio_lang=args.audio_lang,
+                        quality=quality, audio_lang=audio_lang,
                         max_parallel=parallel, hls_workers=workers,
                         keep_temp=args.keep_temp, list_only=False,
                         flaresolverr_url=flaresolverr_url,
@@ -217,12 +251,22 @@ async def run(args: argparse.Namespace) -> None:
                 else:
                     _defaults = AppContext(
                         output_dir=default_output, cache_dir=cache_dir,
-                        quality=args.quality, audio_lang=args.audio_lang,
+                        quality=quality, audio_lang=audio_lang,
                         max_parallel=parallel, hls_workers=workers,
                         keep_temp=False, list_only=False,
                         flaresolverr_url=flaresolverr_url,
                     )
                     ctx = wizard_config(_defaults, mode=mode)
+                    # Persist choices from wizard
+                    cm.set("quality", ctx.quality)
+                    cm.set("audio_lang", ctx.audio_lang)
+                    cm.set("max_parallel", ctx.max_parallel)
+                    cm.set("hls_workers", ctx.hls_workers)
+                    cm.set("output_dir", ctx.output_dir)
+                    try:
+                        cm.save()
+                    except Exception:
+                        pass
 
                 if mode == "stream":
                     await run_stream(ctx, anime, chosen, solver)
