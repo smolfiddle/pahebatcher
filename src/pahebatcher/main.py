@@ -270,7 +270,6 @@ async def run(args: argparse.Namespace) -> None:
                     cm.set("audio_lang", ctx.audio_lang)
                     cm.set("max_parallel", ctx.max_parallel)
                     cm.set("hls_workers", ctx.hls_workers)
-                    cm.set("output_dir", ctx.output_dir)
                     try:
                         cm.save()
                     except Exception:
