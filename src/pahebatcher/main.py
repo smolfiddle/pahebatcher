@@ -248,6 +248,14 @@ async def run(args: argparse.Namespace) -> None:
                         keep_temp=args.keep_temp, list_only=False,
                         flaresolverr_url=flaresolverr_url,
                     )
+                elif cm.is_customized():
+                    ctx = AppContext(
+                        output_dir=default_output, cache_dir=cache_dir,
+                        quality=quality, audio_lang=audio_lang,
+                        max_parallel=parallel, hls_workers=workers,
+                        keep_temp=False, list_only=False,
+                        flaresolverr_url=flaresolverr_url,
+                    )
                 else:
                     _defaults = AppContext(
                         output_dir=default_output, cache_dir=cache_dir,
