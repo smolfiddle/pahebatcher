@@ -31,3 +31,8 @@ build/
 # IDEs
 .vscode/
 .idea/
+
+# Swap files
+*.swp
+*.swo
+*~
