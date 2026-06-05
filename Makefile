@@ -7,9 +7,10 @@ help: install
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Run:"
-	@echo "  make run                           launch interactive wizard"
-	@echo '  make run URL="https://animepahe.pw/anime/<uuid>" ARGS="--all -q 720"'
-	@echo "  make config-show                   display current settings"
+	@echo "  make run                                interactive wizard"
+	@echo "  make run https://animepahe.pw/anime/<uuid>               with URL"
+	@echo '  make run URL="https://..." ARGS="--all -q 720"           with flags'
+	@echo "  make config-show                        display current settings"
 	@echo ""
 	@echo "Config (set once, reused every session):"
 	@echo "  $(PYTHON) -m pahebatcher config set quality 720"
@@ -37,7 +38,7 @@ run: install
 		echo "  First run — settings will be saved after the wizard."; \
 	fi
 	@echo ""
-	$(PYTHON) -m pahebatcher $(URL) $(ARGS)
+	$(PYTHON) -m pahebatcher $(URL) $(ARGS) $(wordlist 2,99,$(MAKECMDGOALS))
 
 config-show: install
 	$(PYTHON) -m pahebatcher config show
@@ -55,3 +56,7 @@ clean:
 	rm -rf $(VENV) __pycache__ .pytest_cache .mypy_cache src/pahebatcher.egg-info dist build
 	find src tests -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete 2>/dev/null || true
+
+# Catch-all prevents make from treating URL as a build target
+%::
+	@true
