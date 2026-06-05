@@ -62,15 +62,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    sub = parser.add_subparsers(dest="command")
-    cfg = sub.add_parser("config", help="Manage persistent configuration")
-    cfg_sub = cfg.add_subparsers(dest="config_action")
-    cfg_sub.add_parser("show", help="Show current configuration")
-    set_p = cfg_sub.add_parser("set", help="Set a configuration value")
-    set_p.add_argument("key", choices=["quality", "audio_lang", "max_parallel", "hls_workers", "output_dir", "keep_temp"])
-    set_p.add_argument("value")
-    cfg_sub.add_parser("reset", help="Reset all settings to defaults")
-
     parser.add_argument("url", metavar="URL", nargs="?", help="AnimePahe series URL")
     sel = parser.add_mutually_exclusive_group()
     sel.add_argument("--all", "-a", action="store_true", help="Download every episode")
@@ -91,17 +82,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run(args: argparse.Namespace) -> None:
-    # ── Config subcommand (no FlareSolverr needed) ──────────────────────────
-    if args.command == "config":
-        if args.config_action == "show":
-            ConfigManager.cli_show()
-        elif args.config_action == "set":
-            ConfigManager.cli_set(args.key, args.value)
-        elif args.config_action == "reset":
-            ConfigManager.cli_reset()
-        return
+def build_config_parser() -> argparse.ArgumentParser:
+    cfg = argparse.ArgumentParser(prog="pahebatcher config", add_help=True)
+    cfg_sub = cfg.add_subparsers(dest="config_action")
+    cfg_sub.add_parser("show", help="Show current configuration")
+    set_p = cfg_sub.add_parser("set", help="Set a configuration value")
+    set_p.add_argument("key", choices=["quality", "audio_lang", "max_parallel", "hls_workers", "output_dir", "keep_temp"])
+    set_p.add_argument("value")
+    cfg_sub.add_parser("reset", help="Reset all settings to defaults")
+    return cfg
+    sel.add_argument("--all", "-a", action="store_true", help="Download every episode")
+    sel.add_argument("--range", "-r", metavar="RANGE", help='Episode range, e.g. "1-12" "1,4,7" "13-"')
+    sel.add_argument("--latest", "-n", metavar="N", type=int, help="Download the latest N episodes")
+    sel.add_argument("--stream", "-s", action="store_true", help="Stream episodes via MPV")
+    parser.add_argument("--list", "-l", action="store_true", dest="list_only", help="List episodes and exit")
+    parser.add_argument("-o", "--output", default="./downloads", help="Output directory")
+    parser.add_argument("-q", "--quality", metavar="Q", type=int, choices=[360, 720, 1080], default=None,
+                        help="Quality: 360, 720, or 1080")
+    parser.add_argument("--audio", metavar="LANG", type=str, choices=["jpn", "eng"], default=None,
+                        dest="audio_lang", help="Audio: jpn=subbed, eng=dubbed")
+    parser.add_argument("-j", "--parallel", metavar="N", type=int, default=None, help="Concurrent downloads (1-6)")
+    parser.add_argument("-w", "--workers", metavar="N", type=int, default=None,
+                        help="HLS segment workers per episode (8-32)")
+    parser.add_argument("--keep-temp", action="store_true", help="Keep raw segment files")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+    return parser
 
+
+async def run(args: argparse.Namespace) -> None:
     # ── Load persistent config as defaults (CLI args override) ──────────────
     cm = ConfigManager()
     cm.load()
@@ -312,18 +320,31 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-    try:
-        asyncio.run(run(args))
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        console.print("\n  [yellow]Interrupted.[/yellow]")
-        sys.exit(0)
-    except Exception as exc:
-        console.print(f"\n  [red]\u2717 Fatal Error:[/red] {exc}")
-        if args.verbose:
-            raise
-        sys.exit(1)
+        # Config subcommand uses its own parser to avoid argparse
+        # subparser greediness with URL positional arguments.
+        if len(sys.argv) > 1 and sys.argv[1] == "config":
+            cfg_parser = build_config_parser()
+            cfg_args = cfg_parser.parse_args(sys.argv[2:])
+            if cfg_args.config_action == "show":
+                ConfigManager.cli_show()
+            elif cfg_args.config_action == "set":
+                ConfigManager.cli_set(cfg_args.key, cfg_args.value)
+            elif cfg_args.config_action == "reset":
+                ConfigManager.cli_reset()
+            return
+
+        parser = build_parser()
+        args = parser.parse_args()
+        try:
+            asyncio.run(run(args))
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            console.print("\n  [yellow]Interrupted.[/yellow]")
+            sys.exit(0)
+        except Exception as exc:
+            console.print(f"\n  [red]\u2717 Fatal Error:[/red] {exc}")
+            if args.verbose:
+                raise
+            sys.exit(1)
 
 
 if __name__ == "__main__":
