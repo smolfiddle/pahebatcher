@@ -97,7 +97,7 @@ class Solver:
                 body: dict[str, Any] = {
                     "cmd": "request.get",
                     "url": url,
-                    "maxTimeout": 60000,
+                    "maxTimeout": 120000,
                     "wait": 2000,
                 }
                 async with self._lock:
