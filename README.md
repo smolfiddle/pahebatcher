@@ -1,6 +1,6 @@
 # pahebatcher
 
-High-performance terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
+Terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
 ![Version](https://img.shields.io/badge/version-3.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -38,10 +38,10 @@ Key characteristics:
 
 - **Single-site focus.** Pahebatcher targets AnimePahe exclusively and does not support other sources.
 - **Self-hosted infrastructure.** Cloudflare bypass uses a local FlareSolverr instance via Docker. All traffic stays on your machine — no third-party proxies.
-- **Crash-safe downloads.** HLS segments are written atomically. A mid-download interruption picks up at the exact segment where it left off, without re-downloading completed work.
-- **Concurrent pipeline.** A two-stage prefetch architecture resolves stream URLs ahead of downloaders via an `asyncio.Queue`, eliminating idle time between episodes. Episodes download in parallel (configurable 1–6), with per-episode segment concurrency (configurable 8–32).
+- **Atomic segment writes.** HLS segments are written to `.tmp` and renamed to `.ts` after completion. A mid-download interruption picks up at the exact segment where it left off, without re-downloading completed work.
+- **Concurrent pipeline.** A two-stage prefetch architecture resolves stream URLs ahead of downloaders via an `asyncio.Queue`. Episodes download in parallel (configurable 1–6), with per-episode segment concurrency (configurable 8–32).
 - **Rich terminal UI.** Progress dashboard shows all episodes simultaneously with per-episode segment counts, transfer speeds, ETAs, file sizes, and color-coded state transitions. Interactive episode selection includes range input, a toggle checklist, and "latest N" mode.
-- **MPV streaming.** Episodes can be streamed directly without downloading. A live playback panel shows the current episode and playlist position. Audio tracks can be toggled between SUB and DUB mid-session.
+- **MPV streaming.** Episodes can be streamed without downloading. A playback panel shows the current episode and playlist position. Audio tracks can be toggled between SUB and DUB mid-session.
 - **Session management.** Previous download sessions can be resumed, deleted, or cleared from the cache. Cached segments are reused on restart.
 - **Persistent configuration.** Quality, audio, concurrency, and output directory are saved to `pahebatcher.toml` in the project directory. Set once via the interactive wizard or `pahebatcher config set`, reused on every subsequent run. CLI flags override persisted values when needed. Edit the file directly or use the `config` subcommand.
 - **MIT licensed.** Free to use, modify, and redistribute.
@@ -126,7 +126,7 @@ pahebatcher "https://animepahe.ru/anime/<uuid>" --list
 # Stream episodes in MPV with on-the-fly SUB/DUB switching
 pahebatcher "https://animepahe.ru/anime/<uuid>" --stream -q 1080
 
-# Maximum throughput: 4 concurrent episodes, 32 HLS workers per episode
+# 4 concurrent episodes, 32 HLS workers per episode
 pahebatcher "https://animepahe.ru/anime/<uuid>" --all -q 1080 -j 4 -w 32
 
 # Save default preferences so you don't need flags every time
@@ -160,7 +160,7 @@ The core workflow: scan a series, select episodes, configure settings, download.
 
 **Download dashboard** shows every episode simultaneously with live per-episode metrics: segment counter (M of N), percentage, transfer speed, ETA, and file size. Each episode transitions through color-coded states: resolving (cyan) -> queued (dim cyan) -> downloading (bold white) -> remuxing (yellow) -> done (green checkmark) / fail (red cross).
 
-**Segment-level crash recovery** is unique to pahebatcher. HLS segments are written atomically (.tmp file renamed to .ts after write completes). On restart, the tool reads `done_indices()` and only fetches missing segments. A mid-episode power failure costs zero progress. Already-completed MP4 files in the output directory are skipped entirely.
+**Segment-level crash recovery.** HLS segments are written atomically (.tmp file renamed to .ts after write completes). On restart, the tool reads `done_indices()` and only fetches missing segments. Already-completed MP4 files in the output directory are skipped entirely.
 
 ### Stream Mode
 
@@ -191,7 +191,7 @@ Running `pahebatcher` without a URL opens interactive search. Type an anime titl
 
 ### Configuration
 
-Settings are persisted at `pahebatcher.toml` in the current directory and loaded on every run. There are three ways to set them, and they compose as follows: **saved defaults apply to every session, CLI flags override them when needed, and the interactive wizard auto-saves whatever you choose.**
+Settings are persisted at `pahebatcher.toml` in the current directory and loaded on every run. Saved defaults apply to every session, CLI flags override them, and the interactive wizard auto-saves whatever is chosen.
 
 Manage settings from the command line:
 
@@ -258,7 +258,7 @@ pahebatcher [URL] [options]
 
 The two concurrency flags control different layers of parallelism:
 
-- `-j` / `--parallel`: How many episodes download at once. Default 2. The resolver stage runs on a single FlareSolverr instance (serial), so values above 3-4 rarely improve throughput. Increase if your internet connection has significant headroom.
+- `-j` / `--parallel`: How many episodes download at once. Default 2. The resolver stage uses a single FlareSolverr instance, so values above 3-4 may not improve throughput. Increase if your internet connection has significant headroom.
 
 - `-w` / `--workers`: How many HLS segments each episode fetches concurrently. Default 24. HLS segments are small (~100 KB each), so high concurrency saturates residential connections efficiently. Lower to 8-12 if you see frequent segment failures from CDN rate limiting.
 
@@ -287,7 +287,7 @@ The combined maximum concurrent TCP streams is `parallel * workers` (default: 2 
   +-------------------------------------------------------------+
 ```
 
-The resolver runs slightly ahead of downloaders via `asyncio.Queue` with `max_parallel + 2` capacity. This ensures the next episode is always ready when a downloader finishes -- no idle time between episodes.
+The resolver runs ahead of downloaders via `asyncio.Queue` with `max_parallel + 2` capacity. The next episode is available when a downloader finishes.
 
 ### Shared Connection Pool
 
@@ -330,7 +330,7 @@ pahe_cache/
 
 ### Muxing
 
-FFmpeg concat demuxer (single-pass, fastest): `ffmpeg -f concat -safe 0 -i concat.txt -c copy -movflags +faststart out.mp4`. Falls back to pipe mode (`cat segments | ffmpeg -i pipe:0`) if concat demuxer fails on malformed TS.
+FFmpeg concat demuxer: `ffmpeg -f concat -safe 0 -i concat.txt -c copy -movflags +faststart out.mp4`. Falls back to pipe mode (`cat segments | ffmpeg -i pipe:0`) if concat demuxer fails on malformed TS.
 
 ### Retry Policy
 
@@ -374,7 +374,7 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 97 tests
+make test        # run all 98 tests
 make lint        # ruff check
 make typecheck   # mypy strict
 make clean       # remove venv, caches, build artifacts
@@ -446,8 +446,7 @@ Bug reports, feature requests, and pull requests are welcome.
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 
-Areas particularly open to contribution:
-- Persistent config file (`~/.pahebatcher/config.json`)
+Areas open to contribution:
 - PyPI publication pipeline
 - Graceful shutdown on Ctrl+C (finish active downloads before exit)
 - Additional anime source support
