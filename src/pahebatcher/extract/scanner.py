@@ -152,6 +152,12 @@ class AnimePaheScanner:
         console.print("  [dim]Discovering all variants ...[/dim]", end="\r")
         all_sessions = await self.discover_all_sessions(self.solver, self.host, self.session)
         title = await self._fetch_title()
+        if title == "Unknown Anime":
+            console.print(
+                "\n  [yellow]Could not fetch series information.[/yellow]"
+                "\n  [dim]FlareSolverr may be unable to bypass Cloudflare."
+                " Try updating: docker pull ghcr.io/flaresolverr/flaresolverr[/dim]\n"
+            )
         anime = AnimeInfo(session=self.session, title=title, host=self.host)
 
         safe_title = sanitize(title)
