@@ -71,7 +71,9 @@ cd pahebatcher
 ### Option A: Makefile (zero-config)
 
 ```bash
-make run          # auto-creates venv, installs, launches wizard
+make run          # interactive wizard
+make run "URL"    # skip search, go directly to series
+make help         # show all targets
 make config-show  # display current settings
 make test         # run all 98 tests
 make lint         # ruff check
@@ -85,6 +87,13 @@ After first run, set persistent defaults:
 make config-show
 venv/bin/python -m pahebatcher config set quality 720
 venv/bin/python -m pahebatcher config set audio_lang eng
+```
+
+Pass a URL directly (positional or via `URL=`):
+
+```bash
+make run "https://animepahe.pw/anime/<uuid>"
+make run URL="https://animepahe.pw/anime/<uuid>" ARGS="--all -q 720"
 ```
 
 ### Option B: pipx (isolated global install)
