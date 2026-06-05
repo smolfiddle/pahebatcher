@@ -8,7 +8,7 @@ help: install
 	@echo ""
 	@echo "Run:"
 	@echo "  make run                           launch interactive wizard"
-	@echo '  make run URL="https://animepahe.pw/anime/<uuid>"   launch with series URL'
+	@echo '  make run URL="https://animepahe.pw/anime/<uuid>" ARGS="--all -q 720"'
 	@echo "  make config-show                   display current settings"
 	@echo ""
 	@echo "Config (set once, reused every session):"
@@ -37,7 +37,7 @@ run: install
 		echo "  First run — settings will be saved after the wizard."; \
 	fi
 	@echo ""
-	$(PYTHON) -m pahebatcher $(URL)
+	$(PYTHON) -m pahebatcher $(URL) $(ARGS)
 
 config-show: install
 	$(PYTHON) -m pahebatcher config show
