@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import re
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from pahebatcher.config import _KWIK_DOMAINS
 from pahebatcher.models import StreamInfo
@@ -70,11 +72,90 @@ def _extract_m3u8(html: str) -> str | None:
     return m.group(1) if m else None
 
 
-async def _resolve_kwik(solver: Solver, url: str) -> StreamInfo | None:
-    """Try every backend to resolve a Kwik URL into a StreamInfo."""
-    from pahebatcher.extract.kwik_scraper import resolve_kwik as scraper_resolve
+KWIK_TLDS = ["cx", "gg", "si", "me", "net", "in", "cc"]
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://animepahe.com/",
+}
 
-    return await scraper_resolve(solver, url)
+
+def _swap_kwik_domain(url: str, tld: str) -> str:
+    p = urlparse(url)
+    parts = p.netloc.split(".")
+    if len(parts) >= 2:
+        parts[-1] = tld
+    return f"{p.scheme}://{'.'.join(parts)}{p.path}"
+
+
+def _sync_curl_fetch(url: str) -> tuple[str, list[dict[str, str]]] | None:
+    try:
+        import curl_cffi.requests  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    try:
+        r = curl_cffi.requests.get(url, impersonate="chrome120", headers=_HEADERS, timeout=30)
+        if r.status_code != 200:
+            return None
+        video_url = _extract_m3u8(r.text)
+        if not video_url:
+            return None
+        cookies = [{"name": k, "value": v} for k, v in r.cookies.items()]
+        return video_url, cookies
+    except Exception:
+        return None
+
+
+async def _resolve_kwik(solver: Solver, url: str) -> StreamInfo | None:
+    """Resolve a Kwik URL to an m3u8 StreamInfo via curl_cffi, FlareSolverr, or domain rotation."""
+
+    # 1. curl_cffi — TLS impersonation bypasses most Cloudflare
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _sync_curl_fetch, url)
+    if result:
+        video_url, cookies = result
+        return StreamInfo(url=video_url, cookies=cookies, user_agent=_HEADERS["User-Agent"], referer=url)
+
+    # 2. curl_cffi + domain rotation
+    current_tld = urlparse(url).netloc.rsplit(".", 1)[-1]
+    for tld in KWIK_TLDS:
+        if tld == current_tld:
+            continue
+        alt = _swap_kwik_domain(url, tld)
+        result = await loop.run_in_executor(None, _sync_curl_fetch, alt)
+        if result:
+            video_url, cookies = result
+            return StreamInfo(url=video_url, cookies=cookies, user_agent=_HEADERS["User-Agent"], referer=alt)
+
+    # 3. FlareSolverr
+    sol = await solver.request(url, cache=False, max_timeout=180000, wait=5000)
+    if sol:
+        html = sol.get("response", "")
+        cookies = sol.get("cookies", [])
+        ua = sol.get("userAgent", _HEADERS["User-Agent"])
+        direct = re.search(r"(https?://[^\s\"']+\.(?:m3u8|mp4)[^\s\"']*)", html)
+        video_url = direct.group(1) if direct else _extract_m3u8(html)
+        if video_url:
+            return StreamInfo(url=video_url, cookies=cookies, user_agent=ua, referer=url)
+
+    # 4. FlareSolverr + domain rotation
+    for tld in KWIK_TLDS:
+        if tld == current_tld:
+            continue
+        alt = _swap_kwik_domain(url, tld)
+        sol = await solver.request(alt, cache=False, max_timeout=120000, wait=3000)
+        if sol:
+            html = sol.get("response", "")
+            cookies = sol.get("cookies", [])
+            ua = sol.get("userAgent", _HEADERS["User-Agent"])
+            direct = re.search(r"(https?://[^\s\"']+\.(?:m3u8|mp4)[^\s\"']*)", html)
+            video_url = direct.group(1) if direct else _extract_m3u8(html)
+            if video_url:
+                return StreamInfo(url=video_url, cookies=cookies, user_agent=ua, referer=alt)
+
+    return None
 
 
 def _parse_resolution_buttons(html: str) -> list[tuple[int, str, bool, str]]:
