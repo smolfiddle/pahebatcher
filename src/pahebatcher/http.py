@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import aiohttp
 
@@ -12,13 +13,21 @@ from pahebatcher.tls import make_ssl_ctx
 
 log = logging.getLogger(__name__)
 
+_curl_local = threading.local()
+
+
+def _get_curl_session() -> object:
+    sess = getattr(_curl_local, "session", None)
+    if sess is None:
+        import curl_cffi.requests  # type: ignore[import-untyped]
+        sess = curl_cffi.requests.Session()
+        _curl_local.session = sess
+    return sess
+
 
 def _curl_fetch(url: str, headers: dict[str, str] | None, timeout: int) -> bytes:
-    try:
-        from curl_cffi import requests as curl_req
-    except ImportError:
-        raise RuntimeError("curl_cffi not installed — needed for CDN access")
-    r = curl_req.get(url, impersonate="chrome120", headers=headers, timeout=timeout)
+    sess = _get_curl_session()
+    r = sess.get(url, impersonate="chrome120", headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.content
 
@@ -68,7 +77,7 @@ class HttpClient:
                     return await resp.read()
             except aiohttp.ClientResponseError as exc:
                 if exc.status == 403 and self._loop:
-                    log.debug("aiohttp 403 on %s — trying curl_cffi fallback", url)
+                    log.debug("aiohttp 403 on %s — curl_cffi fallback", url)
                     return await self._loop.run_in_executor(None, _curl_fetch, url, headers, timeout)
                 if attempt == RETRY_ATTEMPTS - 1:
                     raise
