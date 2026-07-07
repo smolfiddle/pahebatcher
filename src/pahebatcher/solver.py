@@ -22,8 +22,9 @@ class SolverError(Exception):
 
 
 class Solver:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, proxy: str | None = None) -> None:
         self._base = base_url.rstrip("/")
+        self._proxy = proxy
         self._session_id: str | None = None
         self._sem = asyncio.Semaphore(1)
         self._lock = asyncio.Lock()
@@ -100,6 +101,8 @@ class Solver:
                     "maxTimeout": 120000,
                     "wait": 2000,
                 }
+                if self._proxy:
+                    body["proxy"] = self._proxy
                 async with self._lock:
                     if self._session_id:
                         body["session"] = self._session_id
@@ -123,6 +126,12 @@ class Solver:
                     async with self._lock:
                         self._session_id = None
                     await self._ensure_session()
+                elif "cloudflare" in msg.lower() or "challenge" in msg.lower():
+                    log.warning(
+                        "Cloudflare blocked the request — your IP may be banned.\n"
+                        "  Set FLARESOLVERR_PROXY env var to route through a proxy/VPN."
+                    )
+                    break
                 else:
                     break
         return None

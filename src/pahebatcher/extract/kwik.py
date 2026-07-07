@@ -160,7 +160,10 @@ def _parse_resolution_buttons(html: str) -> list[tuple[int, str, bool, str]]:
 async def extract_stream(solver: Solver, play_url: str, quality: int = 1080, audio: str = "jpn") -> StreamInfo:
     sol = await solver.request(play_url, cache=True)
     if not sol:
-        raise RuntimeError("FlareSolverr failed to fetch episode page")
+        raise RuntimeError(
+            "FlareSolverr failed to fetch episode page.\n"
+            "  Try: set FLARESOLVERR_PROXY=http://user:pass@host:port to route through a proxy/VPN"
+        )
     html = sol["response"]
     entries = _parse_resolution_buttons(html)
 

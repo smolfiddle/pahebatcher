@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from typing import TYPE_CHECKING
@@ -153,10 +154,17 @@ class AnimePaheScanner:
         all_sessions = await self.discover_all_sessions(self.solver, self.host, self.session)
         title = await self._fetch_title()
         if title == "Unknown Anime":
+            proxy_hint = os.getenv("FLARESOLVERR_PROXY")
+            proxy_msg = (
+                " Or route through a proxy/VPN via FLARESOLVERR_PROXY env var."
+                if not proxy_hint else
+                " Proxy is set — try a different proxy or check your VPN connection."
+            )
             console.print(
                 "\n  [yellow]Could not fetch series information.[/yellow]"
-                "\n  [dim]FlareSolverr may be unable to bypass Cloudflare."
-                " Try updating: docker pull ghcr.io/flaresolverr/flaresolverr[/dim]\n"
+                f"\n  [dim]FlareSolverr may be unable to bypass Cloudflare."
+                f" Try updating: docker pull ghcr.io/flaresolverr/flaresolverr"
+                f"{proxy_msg}[/dim]\n"
             )
         anime = AnimeInfo(session=self.session, title=title, host=self.host)
 
