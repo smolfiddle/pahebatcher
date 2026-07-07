@@ -126,13 +126,14 @@ async def run(args: argparse.Namespace) -> None:
     parallel = max(1, min(6, parallel))
     workers = max(8, min(32, workers))
     flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+    flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
     cache_dir = Path("pahe_cache")
 
     # Prerequisites check
     console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="cyan"))
     console.print(f"  [dim]FlareSolverr:[/dim] {flaresolverr_url}  ", end="")
 
-    solver = Solver(flaresolverr_url)
+    solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy)
     await solver.start()
     try:
         if not await solver.ping():
