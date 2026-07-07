@@ -6,9 +6,6 @@ import contextlib
 import logging
 import re
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin
-
-import aiohttp
 
 from pahebatcher.config import _KWIK_DOMAINS
 from pahebatcher.models import StreamInfo
@@ -74,48 +71,10 @@ def _extract_m3u8(html: str) -> str | None:
 
 
 async def _resolve_kwik(solver: Solver, url: str) -> StreamInfo | None:
-    """Fetch Kwik page directly via aiohttp with Referer bypass, fallback to FlareSolverr."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://animepahe.com/",
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as r:
-                html = await r.text("utf-8", errors="replace")
-                cookies: list[dict] = []
-                if cookie_hdr := r.headers.get("Set-Cookie"):
-                    for part in cookie_hdr.split(","):
-                        if "=" in part:
-                            name_val = part.split(";")[0].strip()
-                            if "=" in name_val:
-                                n, v = name_val.split("=", 1)
-                                cookies.append({"name": n, "value": v})
-                direct = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
-                video_url = direct.group(1) if direct else _extract_m3u8(html)
-                if video_url:
-                    return StreamInfo(
-                        url=video_url, cookies=cookies,
-                        user_agent=headers["User-Agent"], referer=url,
-                    )
-    except Exception as exc:
-        log.debug("Direct Kwik resolve failed: %s", exc)
+    """Try every backend to resolve a Kwik URL into a StreamInfo."""
+    from pahebatcher.extract.kwik_scraper import resolve_kwik as scraper_resolve
 
-    # Fallback to FlareSolverr (Kwik needs longer timeout)
-    sol = await solver.request(url, cache=False, max_timeout=180000, wait=5000)
-    if not sol:
-        return None
-    html = sol.get("response", "")
-    cookies = sol.get("cookies", [])
-    user_agent = sol.get("userAgent", "Mozilla/5.0")
-    direct = re.search(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', html)
-    video_url = direct.group(1) if direct else _extract_m3u8(html)
-    if video_url:
-        return StreamInfo(url=video_url, cookies=cookies, user_agent=user_agent, referer=url)
-    return None
+    return await scraper_resolve(solver, url)
 
 
 def _parse_resolution_buttons(html: str) -> list[tuple[int, str, bool, str]]:
