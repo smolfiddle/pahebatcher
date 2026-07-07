@@ -28,6 +28,7 @@ dependencies = [
     "rich>=13.9.0",
     "aiohttp>=3.10.0",
     "pycryptodomex>=3.21.0",
+    "curl-cffi>=0.7.0",
 ]
 
 [project.optional-dependencies]
