@@ -38,6 +38,7 @@ class Solver:
         )
 
     async def close(self) -> None:
+        await self.destroy_session()
         if self._http_session:
             await self._http_session.close()
             self._http_session = None
