@@ -104,8 +104,8 @@ async def _resolve_kwik(solver: Solver, url: str) -> StreamInfo | None:
     except Exception as exc:
         log.debug("Direct Kwik resolve failed: %s", exc)
 
-    # Fallback to FlareSolverr
-    sol = await solver.request(url, cache=False)
+    # Fallback to FlareSolverr (Kwik needs longer timeout)
+    sol = await solver.request(url, cache=False, max_timeout=180000, wait=5000)
     if not sol:
         return None
     html = sol.get("response", "")
