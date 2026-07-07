@@ -87,19 +87,25 @@ class Solver:
             await self._post({"cmd": "sessions.destroy", "session": sid}, timeout=10)
             log.info("FlareSolverr session %s destroyed.", sid)
 
-    async def request(self, url: str, cache: bool = True) -> dict | None:
+    async def request(
+        self, url: str, cache: bool = True,
+        max_timeout: int = 120000, wait: int = 2000,
+    ) -> dict | None:
         if cache:
             if hit := await self._solver_cache.get(url):
                 return hit  # type: ignore[no-any-return]
 
         async with self._sem:
             await self._ensure_session()
+            session_rotated = False
+            timeout = max_timeout
+            page_wait = wait
             for attempt in range(RETRY_ATTEMPTS):
                 body: dict[str, Any] = {
                     "cmd": "request.get",
                     "url": url,
-                    "maxTimeout": 120000,
-                    "wait": 2000,
+                    "maxTimeout": timeout,
+                    "wait": page_wait,
                 }
                 if self._proxy:
                     body["proxy"] = self._proxy
@@ -127,8 +133,15 @@ class Solver:
                         self._session_id = None
                     await self._ensure_session()
                 elif "cloudflare" in msg.lower() or "challenge" in msg.lower():
+                    if not session_rotated:
+                        log.warning("Cloudflare blocked — rotating session and retrying with longer timeout.")
+                        await self.destroy_session()
+                        session_rotated = True
+                        timeout = min(timeout * 2, 300000)
+                        page_wait = 5000
+                        continue
                     log.warning(
-                        "Cloudflare blocked the request — your IP may be banned.\n"
+                        "Cloudflare still blocking after session rotation.\n"
                         "  Set FLARESOLVERR_PROXY env var to route through a proxy/VPN."
                     )
                     break
