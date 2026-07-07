@@ -60,11 +60,10 @@ class StreamInfo:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"User-Agent": self.user_agent, "Referer": self.referer}
-
-    @property
-    def cookie_str(self) -> str:
-        return "; ".join(f"{c['name']}={c['value']}" for c in self.cookies)
+        hdrs = {"User-Agent": self.user_agent, "Referer": self.referer}
+        if self.cookies:
+            hdrs["Cookie"] = "; ".join(f"{c['name']}={c['value']}" for c in self.cookies)
+        return hdrs
 
 
 @dataclass
