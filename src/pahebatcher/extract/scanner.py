@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -147,8 +148,69 @@ class AnimePaheScanner:
                 sessions.add(res_session)
         return list(sessions)
 
-    async def scan(self, cache_dir: Path, prefer_audio: str = "jpn") -> AnimeInfo:
+    @staticmethod
+    def _cache_path(cache_dir: Path, session: str, title: str) -> Path:
+        safe = sanitize(title) or session
+        return cache_dir / f"{safe}_{session}" / "_scan_cache.json"
+
+    @staticmethod
+    def _load_cache(cache_path: Path, cache_ttl: int) -> AnimeInfo | None:
+        if not cache_path.exists() or cache_ttl <= 0:
+            return None
+        try:
+            raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        age = time.time() - raw.get("cached_at", 0)
+        if age > cache_ttl * 60:
+            return None
+        episodes = [
+            EpisodeInfo(**ep) for ep in raw.get("episodes", [])
+        ]
+        return AnimeInfo(
+            session=raw["session"],
+            title=raw["title"],
+            host=raw["host"],
+            total=raw.get("total", len(episodes)),
+            episodes=episodes,
+        )
+
+    @staticmethod
+    def _save_cache(cache_path: Path, anime: AnimeInfo) -> None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "cached_at": time.time(),
+            "title": anime.title,
+            "session": anime.session,
+            "host": anime.host,
+            "total": anime.total,
+            "episodes": [
+                {"number": e.number, "session": e.session, "title": e.title,
+                 "fansub": e.fansub, "audio": e.audio, "play_url": e.play_url}
+                for e in anime.episodes
+            ],
+        }
+        try:
+            cache_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    async def scan(self, cache_dir: Path, prefer_audio: str = "jpn", cache_ttl: int = 60) -> AnimeInfo:
         from pahebatcher.ui.console import console
+
+        # Try cache first
+        title = "Unknown Anime"
+        session_path = cache_dir / f"{sanitize('_')}_{self.session}"
+        anime = None
+        if cache_ttl > 0:
+            cache_path = self._cache_path(cache_dir, self.session, title)
+            anime = self._load_cache(cache_path, cache_ttl)
+        if anime:
+            safe_title = sanitize(anime.title)
+            session_path = cache_dir / f"{safe_title}_{self.session}"
+            anime.has_session = session_path.exists()
+            console.print(f"  [dim]Using cached scan ({cache_ttl} min TTL)[/dim]")
+            return anime
 
         console.print("  [dim]Discovering all variants ...[/dim]", end="\r")
         all_sessions = await self.discover_all_sessions(self.solver, self.host, self.session)
@@ -193,4 +255,9 @@ class AnimePaheScanner:
         anime.episodes = sorted(unique_episodes.values(), key=lambda e: (e.number, e.audio))
         anime.total = len({e.number for e in anime.episodes})
         console.print(" " * 60, end="\r")
+
+        # Save cache
+        cache_path = self._cache_path(cache_dir, self.session, title)
+        self._save_cache(cache_path, anime)
+
         return anime

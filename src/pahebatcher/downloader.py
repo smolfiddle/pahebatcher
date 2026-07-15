@@ -152,8 +152,9 @@ class BatchOrchestrator:
         for ep in episodes:
             await resolve_queue.put(ep)
 
+        resolve_ahead = self.ctx.resolve_ahead
         download_queue: asyncio.Queue[tuple[EpisodeInfo, StreamInfo] | None] = asyncio.Queue(
-            maxsize=self.ctx.max_parallel + 2,
+            maxsize=resolve_ahead + self.ctx.max_parallel,
         )
 
         async def resolver() -> None:
@@ -164,11 +165,6 @@ class BatchOrchestrator:
                 ep = self.anime.get_variant(raw_ep.number, self.ctx.audio_lang)
                 if not ep:
                     ep = variants[0]
-                    if ep.audio != self.ctx.audio_lang:
-                        log.warning(
-                            "Preferred audio %s not found for Ep %s, falling back to %s",
-                            self.ctx.audio_lang, raw_ep.number, ep.audio,
-                        )
 
                 display_title = re.sub(
                     r"\s+\(?(?:dub|sub)\)?$", "",
@@ -186,7 +182,7 @@ class BatchOrchestrator:
                 dash.mark_resolving(key, f"Ep {ep.ep_str} \u2014 Resolving...")
                 try:
                     info = await asyncio.wait_for(
-                        extract_stream(self.solver, ep.play_url, self.ctx.quality, self.ctx.audio_lang),
+                        extract_stream(self.solver, ep.play_url, self.ctx.quality, self.ctx.audio_lang, self.ctx.cookie_string),
                         timeout=120.0,
                     )
                     ep.audio = info.audio

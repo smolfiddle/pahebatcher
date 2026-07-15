@@ -22,7 +22,7 @@ class SolverError(Exception):
 
 
 class Solver:
-    def __init__(self, base_url: str, proxy: str | None = None) -> None:
+    def __init__(self, base_url: str, proxy: str | None = None, user_cookies: str = "") -> None:
         self._base = base_url.rstrip("/")
         self._proxy = proxy
         self._session_id: str | None = None
@@ -30,6 +30,19 @@ class Solver:
         self._lock = asyncio.Lock()
         self._solver_cache = TTLCache(ttl=120.0, max_size=256)
         self._http_session: aiohttp.ClientSession | None = None
+        self._user_cookies = self._parse_cookie_string(user_cookies)
+
+    @staticmethod
+    def _parse_cookie_string(s: str) -> list[dict[str, str]]:
+        if not s:
+            return []
+        cookies: list[dict[str, str]] = []
+        for part in s.split(";"):
+            part = part.strip()
+            if "=" in part:
+                name, _, value = part.partition("=")
+                cookies.append({"name": name.strip(), "value": value.strip()})
+        return cookies
 
     async def start(self) -> None:
         self._http_session = aiohttp.ClientSession(
@@ -110,6 +123,8 @@ class Solver:
                 }
                 if self._proxy:
                     body["proxy"] = self._proxy
+                if self._user_cookies:
+                    body["cookies"] = self._user_cookies
                 async with self._lock:
                     if self._session_id:
                         body["session"] = self._session_id

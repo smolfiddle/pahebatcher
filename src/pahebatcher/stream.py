@@ -145,7 +145,7 @@ async def run_stream(
                 console=console, transient=True,
             ) as prog:
                 prog.add_task("", total=None)
-                info = await extract_stream(solver, ep.play_url, ctx.quality, audio_pref)
+                info = await extract_stream(solver, ep.play_url, ctx.quality, audio_pref, ctx.cookie_string)
 
             ep.audio = info.audio
             _clean_ep_title(ep, info)

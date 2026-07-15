@@ -77,6 +77,9 @@ class AppContext:
     keep_temp: bool
     list_only: bool
     flaresolverr_url: str
+    resolve_ahead: int = 999
+    cache_ttl: int = 60
+    cookie_string: str = ""
 
     @classmethod
     def defaults(cls) -> AppContext:
@@ -92,4 +95,7 @@ class AppContext:
             keep_temp=False,
             list_only=False,
             flaresolverr_url=os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1"),
+            resolve_ahead=999,
+            cache_ttl=60,
+            cookie_string="",
         )
