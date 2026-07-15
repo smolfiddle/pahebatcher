@@ -37,12 +37,12 @@ Pahebatcher is a terminal application for batch-downloading anime from [AnimePah
 Key characteristics:
 
 - **Single-site focus.** Pahebatcher targets AnimePahe exclusively and does not support other sources.
-- **Self-hosted infrastructure.** Cloudflare bypass uses a local FlareSolverr instance via Docker. All traffic stays on your machine — no third-party proxies.
+- **Self-hosted infrastructure.** Cloudflare bypass uses a local FlareSolverr instance via Docker. All traffic stays on your machine — no third-party proxies. You can also inject your browser's `cf_clearance` cookie to skip challenge solving entirely.
 - **Atomic segment writes.** HLS segments are written to `.tmp` and renamed to `.ts` after completion. A mid-download interruption picks up at the exact segment where it left off, without re-downloading completed work.
-- **Concurrent pipeline.** A two-stage prefetch architecture resolves stream URLs ahead of downloaders via an `asyncio.Queue`. Episodes download in parallel (configurable 1–6), with per-episode segment concurrency (configurable 8–32).
+- **Concurrent pipeline.** A two-stage prefetch architecture resolves stream URLs ahead of downloaders via an `asyncio.Queue`. A configurable `resolve_ahead` throttle controls how many episodes the resolver stays ahead of downloaders to avoid Cloudflare request bursts. Episodes download in parallel (configurable 1–6), with per-episode segment concurrency (configurable 8–32).
 - **Rich terminal UI.** Progress dashboard shows all episodes simultaneously with per-episode segment counts, transfer speeds, ETAs, file sizes, and color-coded state transitions. Interactive episode selection includes range input, a toggle checklist, and "latest N" mode.
 - **MPV streaming.** Episodes can be streamed without downloading. A playback panel shows the current episode and playlist position. Audio tracks can be toggled between SUB and DUB mid-session.
-- **Session management.** Previous download sessions can be resumed, deleted, or cleared from the cache. Cached segments are reused on restart.
+- **Session management.** Previous download sessions can be resumed, deleted, or cleared from the cache. Cached segments are reused on restart. Scan results are cached to disk with a configurable TTL so re-running the tool skips all AnimePahe API calls for fresh data.
 - **Persistent configuration.** Quality, audio, concurrency, and output directory are saved to `pahebatcher.toml` in the project directory. Set once via the interactive wizard or `pahebatcher config set`, reused on every subsequent run. CLI flags override persisted values when needed. Edit the file directly or use the `config` subcommand.
 - **MIT licensed.** Free to use, modify, and redistribute.
 
@@ -208,22 +208,28 @@ Manage settings from the command line:
 pahebatcher config show                 # display current values
 pahebatcher config set quality 720      # set default quality
 pahebatcher config set audio_lang eng   # set default audio to DUB
-pahebatcher config set max_parallel 4   # set default concurrency
-pahebatcher config set hls_workers 16   # set default segment workers
-pahebatcher config set output_dir ~/anime  # set default output directory
-pahebatcher config reset                # restore all defaults
+pahebatcher config set max_parallel 4     # set default concurrency
+pahebatcher config set hls_workers 16     # set default segment workers
+pahebatcher config set output_dir ~/anime # set default output directory
+pahebatcher config set resolve_ahead 1    # serial resolution to avoid Cloudflare bursts
+pahebatcher config set cache_ttl 120      # cache scan results for 2 hours
+pahebatcher config set cookie_string "cf_clearance=abc123; session=xyz"  # reuse browser cookies
+pahebatcher config reset                  # restore all defaults
 ```
 
 Supported keys and their valid values:
 
-| Key | Type | Values |
-|---|---|---|
-| `quality` | integer | `360`, `720`, `1080` |
-| `audio_lang` | string | `jpn`, `eng` |
-| `max_parallel` | integer | `1`–`6` |
-| `hls_workers` | integer | `8`–`32` |
-| `output_dir` | string | Any valid path |
-| `keep_temp` | boolean | `true`, `false` |
+| Key | Type | Default | Values |
+|---|---|---|---|
+| `quality` | integer | `1080` | `360`, `720`, `1080` |
+| `audio_lang` | string | `jpn` | `jpn`, `eng` |
+| `max_parallel` | integer | `2` | `1`–`6` |
+| `hls_workers` | integer | `24` | `8`–`32` |
+| `output_dir` | string | `.` | Any valid path |
+| `keep_temp` | boolean | `false` | `true`, `false` |
+| `resolve_ahead` | integer | `999` | `0`+ (how many episodes the resolver stays ahead of downloaders; set to `1` for serial resolution) |
+| `cache_ttl` | integer | `60` | `0`+ (minutes before scan cache expires; `0` disables caching) |
+| `cookie_string` | string | `""` | Semicolon-delimited cookies like `cf_clearance=abc123; session=xyz` |
 
 ---
 
@@ -296,7 +302,7 @@ The combined maximum concurrent TCP streams is `parallel * workers` (default: 2 
   +-------------------------------------------------------------+
 ```
 
-The resolver runs ahead of downloaders via `asyncio.Queue` with `max_parallel + 2` capacity. The next episode is available when a downloader finishes.
+The resolver runs ahead of downloaders via `asyncio.Queue` with `resolve_ahead + max_parallel` capacity (default 999 + max_parallel, effectively unlimited). Setting `resolve_ahead` to 1 limits the prefetch to a single episode, spreading the Kwik resolution requests across the download duration to avoid Cloudflare block triggers.
 
 ### Shared Connection Pool
 
@@ -432,7 +438,7 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `FlareSolverr not responding` | FlareSolverr container not running | `docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr` |
-| `No Kwik link found on episode page` | Site structure changed or Cloudflare blocking | Try a different quality value; ensure FlareSolverr has a healthy browser session |
+| `No Kwik link found on episode page` | Site structure changed or Cloudflare blocking | Try a different quality value; ensure FlareSolverr has a healthy browser session. Alternatively set `cookie_string` with your browser's `cf_clearance` cookie |
 | `Resolution timed out` | FlareSolverr overloaded or slow network | Retry with fewer concurrent episodes (`-j 1`); the resolver retries 5 times per episode |
 | Segment download failures | CDN rate limiting | Lower `-w` to 8-12, lower `-j` to 1 |
 | `MPV not found` | MPV not installed or not in PATH | Install via package manager or use Download mode instead |
