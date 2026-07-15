@@ -87,26 +87,10 @@ def build_config_parser() -> argparse.ArgumentParser:
     cfg_sub = cfg.add_subparsers(dest="config_action")
     cfg_sub.add_parser("show", help="Show current configuration")
     set_p = cfg_sub.add_parser("set", help="Set a configuration value")
-    set_p.add_argument("key", choices=["quality", "audio_lang", "max_parallel", "hls_workers", "output_dir", "keep_temp"])
+    set_p.add_argument("key", choices=["quality", "audio_lang", "max_parallel", "hls_workers", "output_dir", "keep_temp", "resolve_ahead", "cache_ttl", "cookie_string"])
     set_p.add_argument("value")
     cfg_sub.add_parser("reset", help="Reset all settings to defaults")
     return cfg
-    sel.add_argument("--all", "-a", action="store_true", help="Download every episode")
-    sel.add_argument("--range", "-r", metavar="RANGE", help='Episode range, e.g. "1-12" "1,4,7" "13-"')
-    sel.add_argument("--latest", "-n", metavar="N", type=int, help="Download the latest N episodes")
-    sel.add_argument("--stream", "-s", action="store_true", help="Stream episodes via MPV")
-    parser.add_argument("--list", "-l", action="store_true", dest="list_only", help="List episodes and exit")
-    parser.add_argument("-o", "--output", default="./downloads", help="Output directory")
-    parser.add_argument("-q", "--quality", metavar="Q", type=int, choices=[360, 720, 1080], default=None,
-                        help="Quality: 360, 720, or 1080")
-    parser.add_argument("--audio", metavar="LANG", type=str, choices=["jpn", "eng"], default=None,
-                        dest="audio_lang", help="Audio: jpn=subbed, eng=dubbed")
-    parser.add_argument("-j", "--parallel", metavar="N", type=int, default=None, help="Concurrent downloads (1-6)")
-    parser.add_argument("-w", "--workers", metavar="N", type=int, default=None,
-                        help="HLS segment workers per episode (8-32)")
-    parser.add_argument("--keep-temp", action="store_true", help="Keep raw segment files")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
-    return parser
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -125,6 +109,9 @@ async def run(args: argparse.Namespace) -> None:
     workers = args.workers if args.workers is not None else int(cm.get("hls_workers"))
     parallel = max(1, min(6, parallel))
     workers = max(8, min(32, workers))
+    resolve_ahead = int(cm.get("resolve_ahead"))
+    cache_ttl = int(cm.get("cache_ttl"))
+    cookie_string = str(cm.get("cookie_string"))
     flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
     flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
     cache_dir = Path("pahe_cache")
@@ -133,7 +120,7 @@ async def run(args: argparse.Namespace) -> None:
     console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="cyan"))
     console.print(f"  [dim]FlareSolverr:[/dim] {flaresolverr_url}  ", end="")
 
-    solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy)
+    solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
     await solver.start()
     try:
         if not await solver.ping():
@@ -163,7 +150,7 @@ async def run(args: argparse.Namespace) -> None:
 
             # Scan
             scanner = AnimePaheScanner(solver, host, session)
-            anime = await scanner.scan(cache_dir, prefer_audio=audio_lang)
+            anime = await scanner.scan(cache_dir, prefer_audio=audio_lang, cache_ttl=cache_ttl)
 
             badge = " [bold yellow][PARTIAL DOWNLOAD FOUND][/bold yellow]" if anime.has_session else ""
             console.print(
@@ -256,6 +243,8 @@ async def run(args: argparse.Namespace) -> None:
                         max_parallel=parallel, hls_workers=workers,
                         keep_temp=args.keep_temp, list_only=False,
                         flaresolverr_url=flaresolverr_url,
+                        resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
+                        cookie_string=cookie_string,
                     )
                 elif cm.is_customized():
                     audio_badge_text = "[cyan]SUB[/cyan]" if audio_lang == "jpn" else "[yellow]DUB[/yellow]"
@@ -269,6 +258,8 @@ async def run(args: argparse.Namespace) -> None:
                         max_parallel=parallel, hls_workers=workers,
                         keep_temp=False, list_only=False,
                         flaresolverr_url=flaresolverr_url,
+                        resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
+                        cookie_string=cookie_string,
                     )
                 else:
                     _defaults = AppContext(
@@ -277,6 +268,8 @@ async def run(args: argparse.Namespace) -> None:
                         max_parallel=parallel, hls_workers=workers,
                         keep_temp=False, list_only=False,
                         flaresolverr_url=flaresolverr_url,
+                        resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
+                        cookie_string=cookie_string,
                     )
                     ctx = wizard_config(_defaults, mode=mode)
                     # Persist choices from wizard

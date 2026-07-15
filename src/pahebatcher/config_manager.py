@@ -20,6 +20,9 @@ class ConfigManager:
         "hls_workers": 24,
         "output_dir": ".",
         "keep_temp": False,
+        "resolve_ahead": 999,
+        "cache_ttl": 60,
+        "cookie_string": "",
     }
 
     def __init__(self, path: Path | None = None) -> None:
@@ -105,6 +108,9 @@ class ConfigManager:
             "hls_workers": lambda v: max(8, min(32, int(v))),
             "output_dir": lambda v: str(v),
             "keep_temp": lambda v: bool(v),
+            "resolve_ahead": lambda v: max(0, int(v)),
+            "cache_ttl": lambda v: max(0, int(v)),
+            "cookie_string": lambda v: str(v),
         }
         if key not in validators:
             raise KeyError(f"Unknown config key: {key}")
@@ -121,6 +127,9 @@ class ConfigManager:
             "hls_workers": int,
             "output_dir": str,
             "keep_temp": lambda v: v.lower() in ("true", "yes", "1", "on"),
+            "resolve_ahead": int,
+            "cache_ttl": int,
+            "cookie_string": str,
         }
         if key not in converters:
             raise KeyError(f"Unknown config key: {key}")

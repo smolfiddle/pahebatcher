@@ -90,13 +90,26 @@ def _swap_kwik_domain(url: str, tld: str) -> str:
     return f"{p.scheme}://{'.'.join(parts)}{p.path}"
 
 
-def _sync_curl_fetch(url: str) -> tuple[str, list[dict[str, str]]] | None:
+def _sync_curl_fetch(url: str, cookies_str: str = "") -> tuple[str, list[dict[str, str]]] | None:
     try:
         import curl_cffi.requests  # type: ignore[import-untyped]
     except ImportError:
         return None
     try:
-        r = curl_cffi.requests.get(url, impersonate="chrome120", headers=_HEADERS, timeout=30)
+        extra_cookies: dict[str, str] = {}
+        if cookies_str:
+            for part in cookies_str.split(";"):
+                part = part.strip()
+                if "=" in part:
+                    k, _, v = part.partition("=")
+                    extra_cookies[k.strip()] = v.strip()
+        r = curl_cffi.requests.get(
+            url,
+            impersonate="chrome120",
+            headers=_HEADERS,
+            timeout=30,
+            cookies=extra_cookies or None,
+        )
         if r.status_code != 200:
             return None
         video_url = _extract_m3u8(r.text)
@@ -108,12 +121,12 @@ def _sync_curl_fetch(url: str) -> tuple[str, list[dict[str, str]]] | None:
         return None
 
 
-async def _resolve_kwik(solver: Solver, url: str) -> StreamInfo | None:
+async def _resolve_kwik(solver: Solver, url: str, cookies_str: str = "") -> StreamInfo | None:
     """Resolve a Kwik URL to an m3u8 StreamInfo via curl_cffi, FlareSolverr, or domain rotation."""
 
     # 1. curl_cffi — TLS impersonation bypasses most Cloudflare
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, _sync_curl_fetch, url)
+    result = await loop.run_in_executor(None, _sync_curl_fetch, url, cookies_str)
     if result:
         video_url, cookies = result
         return StreamInfo(url=video_url, cookies=cookies, user_agent=_HEADERS["User-Agent"], referer=url)
@@ -124,7 +137,7 @@ async def _resolve_kwik(solver: Solver, url: str) -> StreamInfo | None:
         if tld == current_tld:
             continue
         alt = _swap_kwik_domain(url, tld)
-        result = await loop.run_in_executor(None, _sync_curl_fetch, alt)
+        result = await loop.run_in_executor(None, _sync_curl_fetch, alt, cookies_str)
         if result:
             video_url, cookies = result
             return StreamInfo(url=video_url, cookies=cookies, user_agent=_HEADERS["User-Agent"], referer=alt)
@@ -197,7 +210,7 @@ def _parse_resolution_buttons(html: str) -> list[tuple[int, str, bool, str]]:
     return entries
 
 
-async def extract_stream(solver: Solver, play_url: str, quality: int = 1080, audio: str = "jpn") -> StreamInfo:
+async def extract_stream(solver: Solver, play_url: str, quality: int = 1080, audio: str = "jpn", cookies_str: str = "") -> StreamInfo:
     sol = await solver.request(play_url, cache=True)
     if not sol:
         raise RuntimeError(
@@ -245,7 +258,7 @@ async def extract_stream(solver: Solver, play_url: str, quality: int = 1080, aud
     title_m = re.search(r"<title>([^<]+)</title>", html)
     title = title_m.group(1).strip() if title_m else ""
 
-    info = await _resolve_kwik(solver, chosen_url)
+    info = await _resolve_kwik(solver, chosen_url, cookies_str)
     if not info:
         raise RuntimeError(f"Could not resolve Kwik URL: {chosen_url}")
     info.title = title

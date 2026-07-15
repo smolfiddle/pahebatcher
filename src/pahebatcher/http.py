@@ -26,10 +26,21 @@ def _get_curl_session() -> object:
 
 
 def _curl_fetch(url: str, headers: dict[str, str] | None, timeout: int) -> bytes:
+    import time as _time
+    import curl_cffi.requests  # type: ignore[import-untyped]
+
     sess = _get_curl_session()
-    r = sess.get(url, impersonate="chrome120", headers=headers, timeout=timeout)
-    r.raise_for_status()
-    return r.content
+    for attempt in range(5):
+        try:
+            r = sess.get(url, impersonate="chrome120", headers=headers, timeout=timeout)
+            r.raise_for_status()
+            return r.content
+        except curl_cffi.requests.exceptions.Timeout:
+            if attempt < 4:
+                log.debug("curl_cffi timeout on %s — retry %d/5", url, attempt + 1)
+                _time.sleep(1)
+                continue
+            raise
 
 
 class HttpClient:
