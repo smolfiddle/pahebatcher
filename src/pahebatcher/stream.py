@@ -94,7 +94,9 @@ async def run_stream(
         audio_str = _audio_pill(cur_lang)
         if has_alt:
             alt_name = "DUB" if other_lang == "eng" else "SUB"
-            audio_str += f"  [dim]([cyan]{alt_name} available \u2014 press [bold]A[/bold] to switch[/cyan])[/dim]"
+            audio_str += (
+                f"  [dim]([cyan]{alt_name} available \u2014 press [bold]A[/bold] to switch[/cyan])[/dim]"
+            )
 
         ep_title = _display_title(ep)
         if state == "playing":

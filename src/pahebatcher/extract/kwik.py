@@ -92,7 +92,7 @@ def _swap_kwik_domain(url: str, tld: str) -> str:
 
 def _sync_curl_fetch(url: str, cookies_str: str = "") -> tuple[str, list[dict[str, str]]] | None:
     try:
-        import curl_cffi.requests  # type: ignore[import-untyped]
+        import curl_cffi.requests
     except ImportError:
         return None
     try:
@@ -145,28 +145,30 @@ async def _resolve_kwik(solver: Solver, url: str, cookies_str: str = "") -> Stre
     # 3. FlareSolverr
     sol = await solver.request(url, cache=False, max_timeout=180000, wait=5000)
     if sol:
-        html = sol.get("response", "")
-        cookies = sol.get("cookies", [])
-        ua = sol.get("userAgent", _HEADERS["User-Agent"])
-        direct = re.search(r"(https?://[^\s\"']+\.(?:m3u8|mp4)[^\s\"']*)", html)
-        video_url = direct.group(1) if direct else _extract_m3u8(html)
-        if video_url:
-            return StreamInfo(url=video_url, cookies=cookies, user_agent=ua, referer=url)
+        html3 = str(sol.get("response", ""))
+        raw_cookies3 = sol.get("cookies", [])
+        cookies3: list[dict[str, str]] = list(raw_cookies3) if isinstance(raw_cookies3, list) else []
+        ua3 = str(sol.get("userAgent", _HEADERS["User-Agent"]))
+        direct = re.search(r"(https?://[^\s\"']+\.(?:m3u8|mp4)[^\s\"']*)", html3)
+        video_url3 = direct.group(1) if direct else _extract_m3u8(html3)
+        if video_url3:
+            return StreamInfo(url=video_url3, cookies=cookies3, user_agent=ua3, referer=url)
 
     # 4. FlareSolverr + domain rotation
     for tld in KWIK_TLDS:
         if tld == current_tld:
             continue
         alt = _swap_kwik_domain(url, tld)
-        sol = await solver.request(alt, cache=False, max_timeout=120000, wait=3000)
-        if sol:
-            html = sol.get("response", "")
-            cookies = sol.get("cookies", [])
-            ua = sol.get("userAgent", _HEADERS["User-Agent"])
-            direct = re.search(r"(https?://[^\s\"']+\.(?:m3u8|mp4)[^\s\"']*)", html)
-            video_url = direct.group(1) if direct else _extract_m3u8(html)
-            if video_url:
-                return StreamInfo(url=video_url, cookies=cookies, user_agent=ua, referer=alt)
+        sol2 = await solver.request(alt, cache=False, max_timeout=120000, wait=3000)
+        if sol2:
+            html4 = str(sol2.get("response", ""))
+            raw_cookies4 = sol2.get("cookies", [])
+            cookies4: list[dict[str, str]] = list(raw_cookies4) if isinstance(raw_cookies4, list) else []
+            ua4 = str(sol2.get("userAgent", _HEADERS["User-Agent"]))
+            direct2 = re.search(r"(https?://[^\s\"']+\.(?:m3u8|mp4)[^\s\"']*)", html4)
+            video_url4 = direct2.group(1) if direct2 else _extract_m3u8(html4)
+            if video_url4:
+                return StreamInfo(url=video_url4, cookies=cookies4, user_agent=ua4, referer=alt)
 
     return None
 
@@ -196,13 +198,12 @@ def _parse_resolution_buttons(html: str) -> list[tuple[int, str, bool, str]]:
                 continue
             res = int(res_m.group(1))
 
-        is_dub = False
-        if re.search(r'''data-audio\s*=\s*["']eng["']''', attrs, re.I):
-            is_dub = True
-        elif re.search(r'''class\s*=\s*["'][^"']*eng[^"']*["']''', attrs, re.I):
-            is_dub = True
-        elif "eng" in attrs.lower() or "dub" in text.lower():
-            is_dub = True
+        is_dub = bool(
+            re.search(r'''data-audio\s*=\s*["']eng["']''', attrs, re.I)
+            or re.search(r'''class\s*=\s*["'][^"']*eng[^"']*["']''', attrs, re.I)
+            or "eng" in attrs.lower()
+            or "dub" in text.lower()
+        )
 
         fansub_m = re.search(r'data-fansub=["\']([^"\']+)["\']', attrs, re.I)
         fansub = fansub_m.group(1) if fansub_m else (text.split("\u00b7")[0].strip())
@@ -210,14 +211,16 @@ def _parse_resolution_buttons(html: str) -> list[tuple[int, str, bool, str]]:
     return entries
 
 
-async def extract_stream(solver: Solver, play_url: str, quality: int = 1080, audio: str = "jpn", cookies_str: str = "") -> StreamInfo:
+async def extract_stream(
+    solver: Solver, play_url: str, quality: int = 1080, audio: str = "jpn", cookies_str: str = "",
+) -> StreamInfo:
     sol = await solver.request(play_url, cache=True)
     if not sol:
         raise RuntimeError(
             "FlareSolverr failed to fetch episode page.\n"
             "  Try: set FLARESOLVERR_PROXY=http://user:pass@host:port to route through a proxy/VPN"
         )
-    html = sol["response"]
+    html = str(sol["response"])
     entries = _parse_resolution_buttons(html)
 
     quality_map: dict[int, tuple[str, bool, str]] = {}

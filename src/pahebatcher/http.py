@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from typing import Any
 
 import aiohttp
 
@@ -16,10 +17,11 @@ log = logging.getLogger(__name__)
 _curl_local = threading.local()
 
 
-def _get_curl_session() -> object:
-    sess = getattr(_curl_local, "session", None)
+def _get_curl_session() -> Any:
+    sess: Any = getattr(_curl_local, "session", None)
     if sess is None:
-        import curl_cffi.requests  # type: ignore[import-untyped]
+        import curl_cffi.requests
+
         sess = curl_cffi.requests.Session()
         _curl_local.session = sess
     return sess
@@ -27,20 +29,27 @@ def _get_curl_session() -> object:
 
 def _curl_fetch(url: str, headers: dict[str, str] | None, timeout: int) -> bytes:
     import time as _time
-    import curl_cffi.requests  # type: ignore[import-untyped]
 
-    sess = _get_curl_session()
+    import curl_cffi.requests
+
+    sess: Any = _get_curl_session()
     for attempt in range(5):
         try:
-            r = sess.get(url, impersonate="chrome120", headers=headers, timeout=timeout)
+            r: Any = sess.get(url, impersonate="chrome120", headers=headers, timeout=timeout)
             r.raise_for_status()
-            return r.content
+            return bytes(r.content)
         except curl_cffi.requests.exceptions.Timeout:
             if attempt < 4:
                 log.debug("curl_cffi timeout on %s — retry %d/5", url, attempt + 1)
                 _time.sleep(1)
                 continue
             raise
+        except Exception:
+            if attempt < 4:
+                _time.sleep(1)
+                continue
+            raise
+    raise RuntimeError("curl fetch failed after retries")
 
 
 class HttpClient:
@@ -93,7 +102,7 @@ class HttpClient:
                 if attempt == RETRY_ATTEMPTS - 1:
                     raise
                 await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            except (TimeoutError, aiohttp.ClientError, OSError):
                 if attempt == RETRY_ATTEMPTS - 1:
                     raise
                 await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))

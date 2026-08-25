@@ -18,7 +18,7 @@ from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.table import Table
 
-from pahebatcher.config import HLS_WORKERS, VERSION
+from pahebatcher.config import VERSION
 from pahebatcher.config_manager import ConfigManager
 from pahebatcher.downloader import BatchOrchestrator
 from pahebatcher.extract.scanner import AnimePaheScanner, parse_anime_url
@@ -35,7 +35,7 @@ from pahebatcher.ui.prompts import (
     select_episodes,
     wizard_config,
 )
-from pahebatcher.utils import compact_ep_range, fmt_bytes, sanitize, audio_badge
+from pahebatcher.utils import audio_badge, compact_ep_range, fmt_bytes, sanitize
 
 log = logging.getLogger(__name__)
 
@@ -70,13 +70,22 @@ def build_parser() -> argparse.ArgumentParser:
     sel.add_argument("--stream", "-s", action="store_true", help="Stream episodes via MPV")
     parser.add_argument("--list", "-l", action="store_true", dest="list_only", help="List episodes and exit")
     parser.add_argument("-o", "--output", default="./downloads", help="Output directory")
-    parser.add_argument("-q", "--quality", metavar="Q", type=int, choices=[360, 720, 1080], default=None,
-                        help="Quality: 360, 720, or 1080")
-    parser.add_argument("--audio", metavar="LANG", type=str, choices=["jpn", "eng"], default=None,
-                        dest="audio_lang", help="Audio: jpn=subbed, eng=dubbed")
-    parser.add_argument("-j", "--parallel", metavar="N", type=int, default=None, help="Concurrent downloads (1-6)")
-    parser.add_argument("-w", "--workers", metavar="N", type=int, default=None,
-                        help="HLS segment workers per episode (8-32)")
+    parser.add_argument(
+        "-q", "--quality", metavar="Q", type=int, choices=[360, 720, 1080],
+        default=None, help="Quality: 360, 720, or 1080",
+    )
+    parser.add_argument(
+        "--audio", metavar="LANG", type=str, choices=["jpn", "eng"],
+        default=None, dest="audio_lang", help="Audio: jpn=subbed, eng=dubbed",
+    )
+    parser.add_argument(
+        "-j", "--parallel", metavar="N", type=int, default=None,
+        help="Concurrent downloads (1-6)",
+    )
+    parser.add_argument(
+        "-w", "--workers", metavar="N", type=int, default=None,
+        help="HLS segment workers per episode (8-32)",
+    )
     parser.add_argument("--keep-temp", action="store_true", help="Keep raw segment files")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     return parser
@@ -87,7 +96,10 @@ def build_config_parser() -> argparse.ArgumentParser:
     cfg_sub = cfg.add_subparsers(dest="config_action")
     cfg_sub.add_parser("show", help="Show current configuration")
     set_p = cfg_sub.add_parser("set", help="Set a configuration value")
-    set_p.add_argument("key", choices=["quality", "audio_lang", "max_parallel", "hls_workers", "output_dir", "keep_temp", "resolve_ahead", "cache_ttl", "cookie_string"])
+    set_p.add_argument("key", choices=[
+        "quality", "audio_lang", "max_parallel", "hls_workers",
+        "output_dir", "keep_temp", "resolve_ahead", "cache_ttl", "cookie_string",
+    ])
     set_p.add_argument("value")
     cfg_sub.add_parser("reset", help="Reset all settings to defaults")
     return cfg
@@ -129,7 +141,7 @@ async def run(args: argparse.Namespace) -> None:
                 "\n  [red bold]FlareSolverr is not running![/red bold]\n"
                 "  [dim]Start it with Docker:[/dim]\n"
                 "    docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr\n"
-                f"  [dim]Or set FLARESOLVERR_URL env var if it's on a different host.[/dim]"
+                "  [dim]Or set FLARESOLVERR_URL env var if it's on a different host.[/dim]"
             )
             sys.exit(1)
         console.print("[green]\u2713 reachable[/green]")
@@ -184,10 +196,13 @@ async def run(args: argparse.Namespace) -> None:
                     cache_hint = f" [dim]({fmt_bytes(total_cache)})[/dim]" if total_cache > 0 else ""
 
                     console.print(Panel(
-                        "  [bold white]1[/bold white]  [cyan]Download[/cyan]  [dim]\u00b7 save .mp4 files[/dim]\n"
-                        "  [bold white]2[/bold white]  [cyan]Stream[/cyan]    [dim]\u00b7 play in MPV[/dim]\n"
+                        "  [bold white]1[/bold white]  [cyan]Download[/cyan]"
+                        "  [dim]\u00b7 save .mp4 files[/dim]\n"
+                        "  [bold white]2[/bold white]  [cyan]Stream[/cyan]"
+                        "    [dim]\u00b7 play in MPV[/dim]\n"
                         f"  [bold white]3[/bold white]  [cyan]Sessions & Cache[/cyan]{cache_hint}\n"
-                        "  [bold white]4[/bold white]  [cyan]List[/cyan]      [dim]\u00b7 show episode table[/dim]\n"
+                        "  [bold white]4[/bold white]  [cyan]List[/cyan]"
+                        "      [dim]\u00b7 show episode table[/dim]\n"
                         "  [bold white]5[/bold white]  [red]Exit[/red]",
                         title=f"[bold cyan]{anime.title}[/bold cyan]",
                         border_style="cyan", box=box.ROUNDED, padding=(0, 2),
@@ -285,17 +300,13 @@ async def run(args: argparse.Namespace) -> None:
 
                 if mode == "stream":
                     await run_stream(ctx, anime, chosen, solver)
-                    if _scripted:
-                        break
                 else:
                     if not _scripted and not confirm_download(anime, chosen, ctx):
                         continue
                     orch = BatchOrchestrator(ctx, anime, http, solver)
                     await orch.download(chosen)
-                    break
 
-                if _scripted:
-                    break
+                break
 
         finally:
             await http.close()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import re
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -58,7 +57,6 @@ def _print_ep_table(anime: AnimeInfo, episodes: list[EpisodeInfo], selected: set
         if any(v.session in selected for v in variants):
             check = "[green]\u2713[/green]"
         t.add_row(check, ep.ep_str, ep.title or "\u2014")
-    from pahebatcher.ui.console import console
     console.print(t)
 
 
@@ -153,7 +151,9 @@ def select_episodes(anime: AnimeInfo) -> list[EpisodeInfo]:
     return chosen
 
 
-def noninteractive_episodes(anime: AnimeInfo, mode: str, range_str: str = "", latest_n: int = 1) -> list[EpisodeInfo]:
+def noninteractive_episodes(
+    anime: AnimeInfo, mode: str, range_str: str = "", latest_n: int = 1,
+) -> list[EpisodeInfo]:
     unique_eps = sorted(
         {ep.number: ep for ep in anime.episodes}.values(),
         key=lambda e: e.number,
@@ -194,8 +194,11 @@ def confirm_download(anime: AnimeInfo, episodes: list[EpisodeInfo], ctx: AppCont
         f"  [dim]Output:[/dim]    {ctx.output_dir}",
     ]
     if reused_count > 0:
-        stats.append(f"  [dim]Reusing:[/dim]   [bold green]{reused_count}[/bold green] segments from previous session")
-    stats.append(f"  [dim]Est. size:[/dim] [cyan]~{est_total} MB[/cyan]  [dim](~{est_mb_per} MB/ep \u00d7 {n} eps)[/dim]")
+        stats.append(
+            f"  [dim]Reusing:[/dim]   [bold green]{reused_count}[/bold green] segments from previous session",
+        )
+    est_line = f"~{est_total} MB  (~{est_mb_per} MB/ep \u00d7 {n} eps)"
+    stats.append(f"  [dim]Est. size:[/dim] [cyan]{est_line}[/cyan]")
 
     console.print()
     console.print(Panel(
@@ -208,24 +211,30 @@ def confirm_download(anime: AnimeInfo, episodes: list[EpisodeInfo], ctx: AppCont
 
 def wizard_config(defaults: AppContext, mode: str = "download") -> AppContext:
     from dataclasses import replace
+
     from pahebatcher.ui.console import console
 
     console.print()
     console.print(Rule("[bold white] Download Settings [/bold white]", style="cyan"))
     console.print(
         "  [dim]Settings are saved to [bold]pahebatcher.toml[/bold] and reused on future runs.[/dim]\n"
-        "  [dim]After this setup, run [bold]pahebatcher config set KEY VALUE[/bold] to change defaults.[/dim]\n"
+        "  [dim]After this setup, run [bold]pahebatcher config set KEY VALUE[/bold]"
+        " to change defaults.[/dim]\n",
     )
 
     q_default = {360: "1", 720: "2", 1080: "3"}.get(defaults.quality, "3")
     console.print(Panel(
         "  [bold white]1[/bold white]  [dim cyan]360p [/dim cyan]  [dim]~50 MB/ep[/dim]\n"
         "  [bold white]2[/bold white]  [cyan]720p [/cyan]  [dim]~90 MB/ep   \u00b7 recommended[/dim]\n"
-        "  [bold white]3[/bold white]  [bold cyan]1080p[/bold cyan]  [dim]~150 MB/ep  \u00b7 best quality[/dim]",
+        "  [bold white]3[/bold white]  [bold cyan]1080p[/bold cyan]  [dim]~150 MB/ep[/dim]"
+        "  \u00b7 best quality",
         title="[cyan]Quality[/cyan]", border_style="dim cyan", box=box.ROUNDED, padding=(0, 2),
     ))
     quality = {1: 360, 2: 720, 3: 1080}[int(
-        Prompt.ask("  [cyan]Select quality[/cyan]", choices=["1", "2", "3"], default=q_default, show_choices=False)
+        Prompt.ask(
+            "  [cyan]Select quality[/cyan]", choices=["1", "2", "3"],
+            default=q_default, show_choices=False,
+        ),
     )]
 
     audio_default = "1" if defaults.audio_lang == "jpn" else "2"

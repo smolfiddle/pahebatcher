@@ -73,6 +73,10 @@ warn_unreachable = true
 warn_unused_ignores = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 
+[[tool.mypy.overrides]]
+module = ["curl_cffi.*", "Cryptodome.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

@@ -7,8 +7,6 @@ import re
 from typing import Any
 from urllib.parse import urljoin
 
-from Cryptodome.Cipher import AES
-
 from pahebatcher.http import HttpClient
 
 
@@ -68,7 +66,9 @@ async def fetch_m3u8(http: HttpClient, url: str, headers: dict[str, str] | None 
     return data.decode("utf-8", errors="replace")
 
 
-async def resolve_m3u8(http: HttpClient, content: str, base_url: str, headers: dict[str, str] | None = None) -> list[dict[str, Any]]:
+async def resolve_m3u8(
+    http: HttpClient, content: str, base_url: str, headers: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     segments = parse_m3u8(content, base_url)
     if segments:
         return segments

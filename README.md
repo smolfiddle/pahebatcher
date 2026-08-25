@@ -75,9 +75,10 @@ make run          # interactive wizard
 make run "URL"    # skip search, go directly to series
 make help         # show all targets
 make config-show  # display current settings
-make test         # run all 98 tests
-make lint         # ruff check
-make typecheck    # mypy strict
+make test         # run all 191 tests
+make lint         # ruff check (0 errors)
+make typecheck    # mypy strict (0 errors)
+make benchmark    # full coherence benchmark
 make help         # show all targets
 ```
 
@@ -362,12 +363,13 @@ src/pahebatcher/
     main.py                  CLI argument parsing, service wiring, action dispatch
     models.py                EpisodeInfo, AnimeInfo, StreamInfo, AppContext
     config.py                Constants (workers, retry, timeouts, version)
+    config_manager.py        Persistent TOML config (validation, clamping, example)
     utils.py                 sanitize, ep_prefix, fmt_bytes, compact_ep_range
     tls.py                   Hardened SSL context (TLSv1.2+, forward secrecy)
     cache.py                 Async-safe TTLCache with asyncio.Lock and LRU eviction
-    store.py                 SegmentStore (atomic writes, ffmpeg assembly)
-    http.py                  HttpClient (shared aiohttp session, retry logic)
-    solver.py                FlareSolverr client (instance-based, async-native)
+    store.py                 SegmentStore (atomic writes, ffmpeg assembly, orphan cleanup)
+    http.py                  HttpClient (shared aiohttp session, curl fallback, retry)
+    solver.py                FlareSolverr client (instance-based, TTL cache, session rotation)
     extract/
         kwik.py              JsPacker, Kwik URL extraction, stream resolution
         m3u8.py              HLS manifest parser, AES-128 key extraction
@@ -389,9 +391,10 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 98 tests
-make lint        # ruff check
-make typecheck   # mypy strict
+make test        # run all 191 tests
+make lint        # ruff check (0 errors)
+make typecheck   # mypy strict (0 errors)
+make benchmark   # full coherence benchmark: tests + lint + typecheck + coverage
 make clean       # remove venv, caches, build artifacts
 ```
 
@@ -399,9 +402,10 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 98 tests, asyncio auto-mode
-ruff check src/               # ALL rule select, target py311
-mypy src/                     # strict mode, full type coverage
+pytest tests/ -v              # 191 tests, asyncio auto-mode
+pytest tests/ --cov=pahebatcher --cov-report=term  # with coverage
+ruff check src/               # ALL rule select, target py311, 0 errors
+mypy src/                     # strict mode, full type coverage, 0 errors
 ```
 
 ### Test structure
@@ -411,14 +415,26 @@ tests/
     conftest.py               Fixtures: mock solver, mock http, sample data
     test_cache.py             8 tests: set/get, eviction, expiry, concurrent access
     test_config_manager.py    10 tests: defaults, save/load, validation, clamping, existence
+    test_config_extended.py   6 tests: constants, validation edge, roundtrip, corrupted TOML
     test_kwik.py              7 tests: JsPacker, M3U8 extraction, resolution buttons
     test_m3u8.py              8 tests: playlist parsing, AES keys, variant detection
-    test_models.py            11 tests: dataclass fields, properties, edge cases
+    test_models.py            11 tests: dataclass fields, properties, edge cases (incl. cookie_str)
     test_prompts.py           11 tests: episode range parsing, noninteractive selection
     test_scanner.py           12 tests: URL validation, episode page parsing, search
+    test_scanner_extended.py  7 tests: cache path, TTL expiry, glob-stable cache, scan fallback
     test_sessions.py          4 tests: cache listing, metadata, error handling
+    test_solver.py            16 tests: cookie parsing, lifecycle, ping, cache, fetch_json/html
+    test_http.py              8 tests: thread-local session, lifecycle, retry, 403 fallback, curl fetch
+    test_tls.py               4 tests: TLS version, verify mode, ciphers, compression
     test_store.py             7 tests: segment I/O, atomic writes, assemble, cleanup
+    test_store_extended.py    7 tests: atomic tmp handling, metadata, concat cleanup, pipe fallback
+    test_downloader.py        7 tests: _find_existing, skip-existing, mocked download flow
+    test_ui.py                5 tests: episode/search/summary tables, dedup
     test_utils.py             20 tests: sanitize, ep_prefix, fmt_bytes, compact_ep_range
+    test_utils_extended.py    21 tests: fmt_bytes precision, sanitize edge, ep_prefix, compact ranges
+    test_coherence.py         7 tests: benchmark (ruff/mypy green), version, config coherence
+                              ─────────────────────────────────────────────────────────
+                              191 total
 ```
 
 All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package installed via `pip install -e .`.
@@ -426,10 +442,26 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 ### Code standards
 
 - **Python 3.11+** with `from __future__ import annotations` throughout
-- **mypy strict** -- no untyped defs, no implicit optionals, full type coverage
-- **ruff ALL** -- pycodestyle + isort + pep8-naming + pyupgrade + bugbear + simplify + ruff-specific
+- **mypy strict** -- no untyped defs, no implicit optionals, full type coverage (0 errors)
+- **ruff ALL** -- pycodestyle + isort + pep8-naming + pyupgrade + bugbear + simplify + ruff-specific (0 errors)
 - **Dependency injection** -- `AppContext` carries config through the call chain; `Solver`, `HttpClient` are constructor-injected
 - **Zero global mutable state** -- no module-level caches, no classmethod singletons, no import-time side effects
+
+### Benchmark
+
+`make benchmark` (or `python scripts/benchmark.py`) runs the coherence suite:
+
+```
+ruff:       0 errors
+mypy:       0 errors
+pytest:     191 passed
+coverage:   52% (1938 stmts, 935 missed — scrapers/downloader/stream require network/mocks)
+loc:        3022 src, 1879 tests
+density:    6.32 tests / 100 LOC
+version:    3.0.0 coherent across pyproject.toml / config.py / __init__.py
+```
+
+Shared AES cache, atomic segment writes, and glob-stable scan cache are covered by the extended tests.
 
 ---
 
@@ -457,7 +489,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (98 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (191 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 
