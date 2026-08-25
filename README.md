@@ -2,7 +2,7 @@
 
 Terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
-![Version](https://img.shields.io/badge/version-3.0.0-blue)
+![Version](https://img.shields.io/badge/version-3.1.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -458,7 +458,7 @@ pytest:     191 passed
 coverage:   52% (1938 stmts, 935 missed — scrapers/downloader/stream require network/mocks)
 loc:        3022 src, 1879 tests
 density:    6.32 tests / 100 LOC
-version:    3.0.0 coherent across pyproject.toml / config.py / __init__.py
+version:    3.1.0 coherent across pyproject.toml / config.py / __init__.py
 ```
 
 Shared AES cache, atomic segment writes, and glob-stable scan cache are covered by the extended tests.
