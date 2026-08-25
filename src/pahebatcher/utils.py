@@ -22,11 +22,12 @@ def ep_prefix(ep_num: str) -> str:
 
 
 def fmt_bytes(n: int) -> str:
+    size = float(n)
     for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n //= 1024
-    return f"{n:.1f} TB"
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
 
 
 def compact_ep_range(episodes: list[EpisodeInfo]) -> str:

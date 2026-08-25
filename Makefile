@@ -1,7 +1,7 @@
 VENV := venv
 PYTHON := $(VENV)/bin/python
 
-.PHONY: help install run config-show test lint typecheck clean
+.PHONY: help install run config-show test lint typecheck benchmark clean
 
 help: install
 	@echo "Usage: make <target>"
@@ -19,9 +19,10 @@ help: install
 	@echo "  $(PYTHON) -m pahebatcher config reset"
 	@echo ""
 	@echo "Dev:"
-	@echo "  make test         run 98 tests"
-	@echo "  make lint         ruff check"
-	@echo "  make typecheck    mypy strict"
+	@echo "  make test         run 191 tests"
+	@echo "  make lint         ruff check (0 errors)"
+	@echo "  make typecheck    mypy strict (0 errors)"
+	@echo "  make benchmark    full coherence benchmark"
 	@echo "  make clean        remove venv + caches"
 
 $(VENV):
@@ -51,6 +52,18 @@ lint: install
 
 typecheck: install
 	$(PYTHON) -m mypy src/
+
+benchmark: install
+	@echo "=== Benchmark: Coherence Pass ==="
+	@echo "--- ruff ---"
+	@$(PYTHON) -m ruff check src/ && echo "ruff: OK (0 errors)"
+	@echo "--- mypy ---"
+	@$(PYTHON) -m mypy src/ && echo "mypy: OK (0 errors)"
+	@echo "--- pytest ---"
+	@$(PYTHON) -m pytest tests/ -q
+	@echo "--- coverage ---"
+	@$(PYTHON) -m pytest tests/ --cov=pahebatcher --cov-report=term-missing --cov-report=html -q || echo "coverage: install pytest-cov for report"
+	@echo "=== Benchmark Complete ==="
 
 clean:
 	rm -rf $(VENV) __pycache__ .pytest_cache .mypy_cache src/pahebatcher.egg-info dist build

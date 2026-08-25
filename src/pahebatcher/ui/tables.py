@@ -1,12 +1,25 @@
 """Rich table rendering helpers."""
 
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
 from rich import box
 from rich.table import Table
 
 from pahebatcher.utils import fmt_bytes
 
+if TYPE_CHECKING:
+    from pahebatcher.models import AnimeInfo, EpisodeInfo
 
-def episode_table(anime, episodes, selected_set=None, show_audio=True):
+
+def episode_table(
+    anime: AnimeInfo,
+    episodes: list[EpisodeInfo],
+    selected_set: set[str] | None = None,
+    show_audio: bool = True,
+) -> Table:
     """Render episode list as Rich Table."""
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan", padding=(0, 1))
     t.add_column("", width=2, justify="center")
@@ -29,12 +42,14 @@ def episode_table(anime, episodes, selected_set=None, show_audio=True):
     return t
 
 
-def summary_table(results, episodes, output_dir: str):
+def summary_table(
+    results: dict[str, Path | None],
+    episodes: list[EpisodeInfo],
+    output_dir: str,
+) -> Table:
     """Render download completion summary."""
-    from rich.console import Console
     from pahebatcher.utils import audio_badge
 
-    console = Console()
     table = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="bold cyan", border_style="dim")
     table.add_column("Ep", style="cyan", width=6, justify="right")
     table.add_column("Title", style="bold white", ratio=1, overflow="ellipsis")
@@ -52,7 +67,7 @@ def summary_table(results, episodes, output_dir: str):
     return table
 
 
-def search_results_table(results, query):
+def search_results_table(results: list[dict[str, Any]], query: str) -> Table:
     """Render interactive search results."""
     table = Table(
         box=box.ROUNDED, header_style="bold cyan",

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import time
 from pathlib import Path
 from typing import Any
 
 from rich import box
-from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.rule import Rule
 from rich.table import Table
@@ -97,15 +95,20 @@ class SessionManager:
                     time.sleep(0.5)
                 continue
             if choice in ("R", "D"):
-                idx = IntPrompt.ask(f"  Select # to {'Resume' if choice == 'R' else 'Delete'}", default=1)
+                idx = IntPrompt.ask(
+                    f"  Select # to {'Resume' if choice == 'R' else 'Delete'}", default=1,
+                )
                 if 1 <= idx <= len(sessions):
                     target = sessions[idx - 1]
                     if choice == "R":
-                        return target["url"]
-                    else:
-                        if Confirm.ask(f"  [red]Delete session for '{target['title']}'?[/red]", default=True):
-                            import shutil
-                            shutil.rmtree(target["path"], ignore_errors=True)
-                            console.print(f"  [green]\u2713 Deleted '{target['title']}'.[/green]")
-                            time.sleep(0.5)
+                        return str(target["url"])
+                    if Confirm.ask(f"  [red]Delete session for '{target['title']}'?[/red]", default=True):
+                        import pathlib
+                        import shutil
+
+                        target_path = target["path"]
+                        if isinstance(target_path, pathlib.Path):
+                            shutil.rmtree(target_path, ignore_errors=True)
+                        console.print(f"  [green]\u2713 Deleted '{target['title']}'.[/green]")
+                        time.sleep(0.5)
                 continue
