@@ -36,7 +36,7 @@ def parse_anime_url(url: str) -> tuple[str, str]:
     if not m:
         raise ValueError(
             f"No anime UUID in URL.\n"
-            f"  Expected: https://animepahe.ru/anime/<uuid>\n"
+            f"  Expected: https://animepahe.pw/anime/<uuid>\n"
             f"  Got:      {url}"
         )
     return parsed.netloc, m.group(0)
