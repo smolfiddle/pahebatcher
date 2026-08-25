@@ -305,18 +305,19 @@ This is essentially a code review by the same entity that wrote the code, perfor
 
 ## 6. Concrete Metrics from pahebatcher
 
-| Metric | Monolith (v2) | Refactored (v3) | Delta |
-|---|---|---|---|
-| Files | 1 | 21 | +20 |
-| Lines of code | 2704 | 3400 | +26% |
-| Test count | 13 | 88 | +577% |
-| Test density | 0.48 per 100 LOC | 2.59 per 100 LOC | +440% |
-| Type coverage | ~30% (partial) | ~95% (mypy strict) | +217% |
-| Cyclic dependencies | N/A (single file) | 0 | Clean DAG |
-| Global mutable state | 4 instances | 0 | Eliminated |
-| Retry code paths | 3 (urllib, aiohttp, Solver) | 1 (HttpClient) | -67% |
-| Install method | Copy-paste script | `pip install -e .` | Professional |
-| Context window usage during build | ~40% coordination | 100% logic (monolith) then 60% logic / 40% coordination (refactor) | Split across phases |
+| Metric | Monolith (v2) | Refactored (v3) | Coherence (v3.1) | Delta v2→v3.1 |
+|---|---|---|---|---|
+| Files | 1 | 21 | 24 | +23 |
+| Lines of code | 2704 | 3400 | ~4700 | +74% |
+| Test count | 13 | 88 | 191 | +1369% |
+| Test density | 0.48 per 100 LOC | 2.59 per 100 LOC | 4.06 per 100 LOC | +746% |
+| Type coverage | ~30% (partial) | ~95% (mypy strict) | 100% (mypy strict, 0 errors) | +233% |
+| Ruff errors | — | 39 (claimed 0) | 0 | Fixed |
+| Cyclic dependencies | N/A (single file) | 0 | 0 | Clean DAG |
+| Global mutable state | 4 instances | 0 | 0 | Eliminated |
+| Retry code paths | 3 (urllib, aiohttp, Solver) | 1 (HttpClient) | 1 (HttpClient) | -67% |
+| Install method | Copy-paste script | `pip install -e .` | `pip install -e .` | Professional |
+| Context window usage during build | ~40% coordination | 100% logic (monolith) then 60% logic / 40% coordination (refactor) | 100% logic split | Split across phases |
 
 The line count increased (+26%) because of:
 - Module-level docstrings

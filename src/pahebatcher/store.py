@@ -12,7 +12,9 @@ from pahebatcher.utils import sanitize
 
 
 class SegmentStore:
-    def __init__(self, cache_root: Path, anime_title: str, anime_session: str, ep_num: str, audio: str = "jpn") -> None:
+    def __init__(
+        self, cache_root: Path, anime_title: str, anime_session: str, ep_num: str, audio: str = "jpn",
+    ) -> None:
         safe_title = sanitize(anime_title)
         self.root = cache_root / f"{safe_title}_{anime_session}"
         self.dir = self.root / f"Ep_{ep_num}_{audio.upper()}"
@@ -57,17 +59,27 @@ class SegmentStore:
             capture_output=True, timeout=600,
         )
         if result.returncode == 0:
+            with contextlib.suppress(Exception):
+                lst.unlink()
             return True
 
-        proc = subprocess.Popen(
-            ["ffmpeg", "-y", "-i", "pipe:0", "-c", "copy", "-movflags", "+faststart", str(out)],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        for i in range(n_segments):
-            proc.stdin.write(self.seg_path(i).read_bytes())  # type: ignore[union-attr]
-        proc.stdin.close()  # type: ignore[union-attr]
-        proc.wait(timeout=600)
-        return proc.returncode == 0
+        try:
+            proc = subprocess.Popen(
+                ["ffmpeg", "-y", "-i", "pipe:0", "-c", "copy", "-movflags", "+faststart", str(out)],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            assert proc.stdin is not None
+            for i in range(n_segments):
+                try:
+                    proc.stdin.write(self.seg_path(i).read_bytes())
+                except BrokenPipeError:
+                    break
+            proc.stdin.close()
+            proc.wait(timeout=600)
+            return proc.returncode == 0
+        finally:
+            with contextlib.suppress(Exception):
+                lst.unlink()
 
     def cleanup(self) -> None:
         with contextlib.suppress(Exception):

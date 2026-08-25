@@ -68,17 +68,20 @@ class Solver:
             base = base[:-3]
         try:
             async with self._session.get(f"{base}/health", timeout=aiohttp.ClientTimeout(total=5)) as r:
-                data = await r.json()
-                return data.get("status") == "ok"
+                data: Any = await r.json()
+                if isinstance(data, dict):
+                    return bool(data.get("status") == "ok")
+                return False
         except Exception:
             return False
 
-    async def _post(self, body: dict, timeout: int = 90) -> dict | None:
+    async def _post(self, body: dict[str, Any], timeout: int = 90) -> dict[str, Any] | None:
         try:
             async with self._session.post(
                 self._base, json=body, timeout=aiohttp.ClientTimeout(total=timeout),
             ) as r:
-                return await r.json()
+                result: Any = await r.json()
+                return result if isinstance(result, dict) else None
         except Exception as exc:
             log.debug("FlareSolverr POST error: %s", exc)
             return None
@@ -104,10 +107,9 @@ class Solver:
     async def request(
         self, url: str, cache: bool = True,
         max_timeout: int = 120000, wait: int = 2000,
-    ) -> dict | None:
-        if cache:
-            if hit := await self._solver_cache.get(url):
-                return hit  # type: ignore[no-any-return]
+    ) -> dict[str, Any] | None:
+        if cache and (hit := await self._solver_cache.get(url)):
+            return hit  # type: ignore[no-any-return]
 
         async with self._sem:
             await self._ensure_session()
@@ -165,7 +167,7 @@ class Solver:
                     break
         return None
 
-    async def fetch_json(self, url: str) -> dict | None:
+    async def fetch_json(self, url: str) -> dict[str, Any] | None:
         sol = await self.request(url)
         body = (sol or {}).get("response", "")
         if not body:
@@ -181,9 +183,11 @@ class Solver:
                 .strip()
             )
             with contextlib.suppress(json.JSONDecodeError):
-                return json.loads(txt)  # type: ignore[no-any-return]
+                parsed: Any = json.loads(txt)
+                return parsed if isinstance(parsed, dict) else None
         with contextlib.suppress(json.JSONDecodeError):
-            return json.loads(re.sub(r"<[^>]+>", "", body).strip())  # type: ignore[no-any-return]
+            parsed2: Any = json.loads(re.sub(r"<[^>]+>", "", body).strip())
+            return parsed2 if isinstance(parsed2, dict) else None
         start = body.find("{")
         if start >= 0:
             depth = in_str = escape = 0
@@ -205,12 +209,17 @@ class Solver:
                     depth -= 1
                     if depth == 0:
                         with contextlib.suppress(json.JSONDecodeError):
-                            return json.loads(body[start : i + 1])  # type: ignore[no-any-return]
+                            parsed3: Any = json.loads(body[start : i + 1])
+                            if isinstance(parsed3, dict):
+                                return parsed3
                         break
         return None
 
-    async def fetch_html(self, url: str) -> tuple[str, list[dict]] | None:
+    async def fetch_html(self, url: str) -> tuple[str, list[dict[str, Any]]] | None:
         sol = await self.request(url)
         if not sol:
             return None
-        return sol.get("response", ""), sol.get("cookies", [])
+        resp = sol.get("response", "")
+        cookies_val = sol.get("cookies", [])
+        cookies_list: list[dict[str, Any]] = list(cookies_val) if isinstance(cookies_val, list) else []
+        return str(resp), cookies_list
