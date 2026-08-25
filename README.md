@@ -122,28 +122,28 @@ All three methods produce the `pahebatcher` command. You can also run via `pytho
 pahebatcher
 
 # Download entire series, 720p, Japanese audio, 2 concurrent episodes
-pahebatcher "https://animepahe.ru/anime/<uuid>" --all -q 720
+pahebatcher "https://animepahe.pw/anime/<uuid>" --all -q 720
 
 # Download episodes 1 through 12, English dub, 1080p, custom output directory
-pahebatcher "https://animepahe.ru/anime/<uuid>" --range 1-12 --audio eng -q 1080 -o ~/anime
+pahebatcher "https://animepahe.pw/anime/<uuid>" --range 1-12 --audio eng -q 1080 -o ~/anime
 
 # Download only the 3 most recently aired episodes
-pahebatcher "https://animepahe.ru/anime/<uuid>" --latest 3
+pahebatcher "https://animepahe.pw/anime/<uuid>" --latest 3
 
 # List all episodes and exit (no download)
-pahebatcher "https://animepahe.ru/anime/<uuid>" --list
+pahebatcher "https://animepahe.pw/anime/<uuid>" --list
 
 # Stream episodes in MPV with on-the-fly SUB/DUB switching
-pahebatcher "https://animepahe.ru/anime/<uuid>" --stream -q 1080
+pahebatcher "https://animepahe.pw/anime/<uuid>" --stream -q 1080
 
 # 4 concurrent episodes, 32 HLS workers per episode
-pahebatcher "https://animepahe.ru/anime/<uuid>" --all -q 1080 -j 4 -w 32
+pahebatcher "https://animepahe.pw/anime/<uuid>" --all -q 1080 -j 4 -w 32
 
 # Save default preferences so you don't need flags every time
 pahebatcher config set quality 720
 
 # Enable debug logging for troubleshooting
-pahebatcher "https://animepahe.ru/anime/<uuid>" --all --verbose
+pahebatcher "https://animepahe.pw/anime/<uuid>" --all --verbose
 ```
 
 Output files are saved as `Ep 001 - Episode Title.mp4` in the output directory (default: `./downloads/<series_name>/`).
