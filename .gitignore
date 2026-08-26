@@ -16,8 +16,9 @@ htmlcov/
 # Project Output
 downloads/
 
-# Config
+# Config — local file is git-ignored (see pahebatcher.toml.example for defaults)
 pahebatcher.toml
+!pahebatcher.toml.example
 
 # Session Cache
 pahe_cache/

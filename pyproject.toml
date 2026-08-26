@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pahebatcher"
-version = "3.0.0"
+version = "3.1.0"
 description = "High-performance AnimePahe batch downloader with parallel HLS engine"
 readme = "README.md"
 license = { text = "MIT" }
@@ -72,6 +72,10 @@ packages = ["src/pahebatcher"]
 warn_unreachable = true
 warn_unused_ignores = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = ["curl_cffi.*", "Cryptodome.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,12 @@
+# pahebatcher configuration — copy to pahebatcher.toml and edit
+# This file is the committed example; pahebatcher.toml itself is git-ignored.
+
+quality = 1080
+audio_lang = 'jpn'
+max_parallel = 2
+hls_workers = 24
+output_dir = '.'
+keep_temp = false
+resolve_ahead = 1
+cache_ttl = 60
+cookie_string = ''

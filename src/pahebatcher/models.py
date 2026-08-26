@@ -51,7 +51,7 @@ class AnimeInfo:
 @dataclass
 class StreamInfo:
     url: str
-    cookies: list[dict]
+    cookies: list[dict[str, str]]
     user_agent: str
     referer: str
     title: str = ""
@@ -60,10 +60,16 @@ class StreamInfo:
 
     @property
     def headers(self) -> dict[str, str]:
-        hdrs = {"User-Agent": self.user_agent, "Referer": self.referer}
+        hdrs: dict[str, str] = {"User-Agent": self.user_agent, "Referer": self.referer}
         if self.cookies:
-            hdrs["Cookie"] = "; ".join(f"{c['name']}={c['value']}" for c in self.cookies)
+            hdrs["Cookie"] = self.cookie_str
         return hdrs
+
+    @property
+    def cookie_str(self) -> str:
+        if not self.cookies:
+            return ""
+        return "; ".join(f"{c['name']}={c['value']}" for c in self.cookies)
 
 
 @dataclass

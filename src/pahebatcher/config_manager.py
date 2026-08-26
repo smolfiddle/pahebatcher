@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -64,9 +63,10 @@ class ConfigManager:
 
     @staticmethod
     def cli_show(path: Path | None = None) -> None:
-        from pahebatcher.ui.console import console
-        from rich.table import Table
         from rich import box
+        from rich.table import Table
+
+        from pahebatcher.ui.console import console
 
         cm = ConfigManager(path)
         cm.load()

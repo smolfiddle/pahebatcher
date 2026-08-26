@@ -77,7 +77,10 @@ class Dashboard:
         self._live = Live(
             Panel(
                 Group(header, Rule(style="dim"), self._progress),
-                title=f"[bold cyan]pahe-batcher[/bold cyan]  [dim]v{VERSION}  -  {self._total_eps} episodes[/dim]",
+                title=(
+                    f"[bold cyan]pahe-batcher[/bold cyan]"
+                    f"  [dim]v{VERSION}  -  {self._total_eps} episodes[/dim]"
+                ),
                 border_style="cyan", box=box.ROUNDED, padding=(0, 1),
             ),
             console=self._console, refresh_per_second=8,
@@ -129,7 +132,9 @@ class Dashboard:
 
     def mark_remuxing(self, key: str, label: str) -> None:
         if (tid := self._tasks.get(key)) is not None:
-            self._progress.update(tid, description=f"[yellow]\u27f3 Remuxing {label[:30]}[/yellow]", size="muxing")
+            self._progress.update(
+                tid, description=f"[yellow]\u27f3 Remuxing {label[:30]}[/yellow]", size="muxing",
+            )
             self._progress.stop_task(tid)
 
     def mark_done(self, key: str, label: str) -> None:
