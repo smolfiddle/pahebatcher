@@ -149,6 +149,10 @@ class Dashboard:
             )
             self._progress.stop_task(tid)
 
+    def mark_retry(self, key: str, label: str) -> None:
+        if (tid := self._tasks.get(key)) is not None:
+            self._progress.update(tid, description=f"[yellow]\u27f3 {label[:30]}[/yellow]", size="retry")
+
     def mark_fail(self, key: str, reason: str) -> None:
         if (tid := self._tasks.get(key)) is not None:
             self._progress.update(tid, description=f"[red]\u2717 {reason[:32]}[/red]", size="fail")

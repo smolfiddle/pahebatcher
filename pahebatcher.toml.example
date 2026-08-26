@@ -10,3 +10,4 @@ keep_temp = false
 resolve_ahead = 1
 cache_ttl = 60
 cookie_string = ''
+auto_retry = 2

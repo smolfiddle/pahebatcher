@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pahebatcher"
-version = "3.1.0"
+version = "3.2.0"
 description = "High-performance AnimePahe batch downloader with parallel HLS engine"
 readme = "README.md"
 license = { text = "MIT" }
@@ -60,7 +60,7 @@ select = [
     "SIM",             # flake8-simplify
     "RUF",             # ruff-specific
 ]
-ignore = ["SIM105", "SIM108", "B904", "RUF012"]
+ignore = ["SIM105", "SIM108", "B904", "RUF012", "B023"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["pahebatcher"]

@@ -19,7 +19,7 @@ help: install
 	@echo "  $(PYTHON) -m pahebatcher config reset"
 	@echo ""
 	@echo "Dev:"
-	@echo "  make test         run 191 tests"
+	@echo "  make test         run 195 tests"
 	@echo "  make lint         ruff check (0 errors)"
 	@echo "  make typecheck    mypy strict (0 errors)"
 	@echo "  make benchmark    full coherence benchmark"
