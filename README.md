@@ -2,7 +2,7 @@
 
 Terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
-![Version](https://img.shields.io/badge/version-3.2.0-blue)
+![Version](https://img.shields.io/badge/version-3.3.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -462,7 +462,7 @@ pytest:     195 passed
 coverage:   52% (1941 stmts, 938 missed — scrapers/downloader/stream require network/mocks)
 loc:        3025 src, 1879 tests
 density:    6.44 tests / 100 LOC
-version:    3.2.0 coherent across pyproject.toml / config.py / __init__.py
+version:    3.3.0 coherent across pyproject.toml / config.py / __init__.py
 ```
 
 Shared AES cache, atomic segment writes, and glob-stable scan cache are covered by the extended tests.
@@ -480,6 +480,8 @@ Shared AES cache, atomic segment writes, and glob-stable scan cache are covered 
 | `MPV not found` | MPV not installed or not in PATH | Install via package manager or use Download mode instead |
 | `ffmpeg` command not found | FFmpeg not installed | `sudo apt install ffmpeg` / `brew install ffmpeg` |
 | `AES-128 stream detected` | pycryptodomex not installed (should not occur with `pip install`) | `pip install pycryptodomex` |
+| `Playback ended` immediately in MPV | MPV HTTP/1.1 403 (CDN requires HTTP/2 headers) / `vo` missing | Fixed in 3.3.0 via local HLS proxy (`src/pahebatcher/stream.py:60`); if still, test `mpv --no-config --vo=null --ao=null --ytdl=no http://127.0.0.1:port/uwu.m3u8` and check `stderr` with `--verbose` |
+| ARM64 (OrangepiZero3) `vo`/`hwdec` fail / slow software render | Mali/Panfrost not detected, `mpv` minimal build | `sudo apt install mpv ffmpeg ca-certificates`; try `mpv --hwdec=no --vo=gpu` or `--vo=drm --ao=alsa`; Armbian kernel recompile may be needed for GPU |
 | Slow single-episode downloads | Low segment concurrency | Increase `-w` to 24-32; HLS segments are ~100 KB each and benefit from high parallelism |
 | Cache directory growing too large | Old sessions accumulating | Use Session Manager (option 3 from main menu) to clear stale entries; >24h orphans are auto-cleaned |
 

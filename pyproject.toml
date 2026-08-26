@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pahebatcher"
-version = "3.2.0"
+version = "3.3.0"
 description = "High-performance AnimePahe batch downloader with parallel HLS engine"
 readme = "README.md"
 license = { text = "MIT" }
