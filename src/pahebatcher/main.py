@@ -87,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="HLS segment workers per episode (8-32)",
     )
     parser.add_argument("--keep-temp", action="store_true", help="Keep raw segment files")
+    parser.add_argument(
+        "--retry", type=int, choices=[0, 1, 2], default=None,
+        help="Auto-retry failed episodes (0-2, default 2)",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     return parser
 
@@ -99,6 +103,7 @@ def build_config_parser() -> argparse.ArgumentParser:
     set_p.add_argument("key", choices=[
         "quality", "audio_lang", "max_parallel", "hls_workers",
         "output_dir", "keep_temp", "resolve_ahead", "cache_ttl", "cookie_string",
+        "auto_retry",
     ])
     set_p.add_argument("value")
     cfg_sub.add_parser("reset", help="Reset all settings to defaults")
@@ -124,6 +129,8 @@ async def run(args: argparse.Namespace) -> None:
     resolve_ahead = int(cm.get("resolve_ahead"))
     cache_ttl = int(cm.get("cache_ttl"))
     cookie_string = str(cm.get("cookie_string"))
+    auto_retry = args.retry if args.retry is not None else int(cm.get("auto_retry"))
+    auto_retry = max(0, min(2, auto_retry))
     flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
     flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
     cache_dir = Path("pahe_cache")
@@ -259,7 +266,7 @@ async def run(args: argparse.Namespace) -> None:
                         keep_temp=args.keep_temp, list_only=False,
                         flaresolverr_url=flaresolverr_url,
                         resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
-                        cookie_string=cookie_string,
+                        cookie_string=cookie_string, auto_retry=auto_retry,
                     )
                 elif cm.is_customized():
                     audio_badge_text = "[cyan]SUB[/cyan]" if audio_lang == "jpn" else "[yellow]DUB[/yellow]"
@@ -274,7 +281,7 @@ async def run(args: argparse.Namespace) -> None:
                         keep_temp=False, list_only=False,
                         flaresolverr_url=flaresolverr_url,
                         resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
-                        cookie_string=cookie_string,
+                        cookie_string=cookie_string, auto_retry=auto_retry,
                     )
                 else:
                     _defaults = AppContext(
@@ -284,7 +291,7 @@ async def run(args: argparse.Namespace) -> None:
                         keep_temp=False, list_only=False,
                         flaresolverr_url=flaresolverr_url,
                         resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
-                        cookie_string=cookie_string,
+                        cookie_string=cookie_string, auto_retry=auto_retry,
                     )
                     ctx = wizard_config(_defaults, mode=mode)
                     # Persist choices from wizard

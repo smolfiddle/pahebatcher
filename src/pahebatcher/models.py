@@ -86,6 +86,7 @@ class AppContext:
     resolve_ahead: int = 999
     cache_ttl: int = 60
     cookie_string: str = ""
+    auto_retry: int = 2
 
     @classmethod
     def defaults(cls) -> AppContext:
@@ -104,4 +105,5 @@ class AppContext:
             resolve_ahead=999,
             cache_ttl=60,
             cookie_string="",
+            auto_retry=2,
         )

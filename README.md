@@ -2,7 +2,7 @@
 
 Terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
-![Version](https://img.shields.io/badge/version-3.1.0-blue)
+![Version](https://img.shields.io/badge/version-3.2.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -75,7 +75,7 @@ make run          # interactive wizard
 make run "URL"    # skip search, go directly to series
 make help         # show all targets
 make config-show  # display current settings
-make test         # run all 191 tests
+make test         # run all 195 tests
 make lint         # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark    # full coherence benchmark
@@ -215,6 +215,7 @@ pahebatcher config set output_dir ~/anime # set default output directory
 pahebatcher config set resolve_ahead 1    # serial resolution to avoid Cloudflare bursts
 pahebatcher config set cache_ttl 120      # cache scan results for 2 hours
 pahebatcher config set cookie_string "cf_clearance=abc123; session=xyz"  # reuse browser cookies
+pahebatcher config set auto_retry 2         # auto-retry failed episodes (0-2, 2 = 3 total attempts)
 pahebatcher config reset                  # restore all defaults
 ```
 
@@ -231,6 +232,7 @@ Supported keys and their valid values:
 | `resolve_ahead` | integer | `999` | `0`+ (how many episodes the resolver stays ahead of downloaders; set to `1` for serial resolution) |
 | `cache_ttl` | integer | `60` | `0`+ (minutes before scan cache expires; `0` disables caching) |
 | `cookie_string` | string | `""` | Semicolon-delimited cookies like `cf_clearance=abc123; session=xyz` |
+| `auto_retry` | integer | `2` | `0`–`2` (0 = no retry, 2 = 3 total attempts per episode) |
 
 ---
 
@@ -260,6 +262,7 @@ pahebatcher [URL] [options]
 | `--parallel N` | `-j N` | Concurrent episode downloads (1-6) | `2` |
 | `--workers N` | `-w N` | HLS segment fetchers per episode (8-32) | `24` |
 | `--keep-temp` | — | Keep raw `.ts` files after muxing | off |
+| `--retry N` | — | Auto-retry failed episodes (0-2, 3 total) | `2` |
 | `--verbose` | `-v` | Enable debug-level logging | off |
 
 ### Configuration commands
@@ -391,9 +394,9 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 191 tests
+make test        # run all 195 tests
 make lint        # ruff check (0 errors)
-make typecheck   # mypy strict (0 errors)
+make typecheck    # mypy strict (0 errors)
 make benchmark   # full coherence benchmark: tests + lint + typecheck + coverage
 make clean       # remove venv, caches, build artifacts
 ```
@@ -402,7 +405,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 191 tests, asyncio auto-mode
+pytest tests/ -v              # 195 tests, asyncio auto-mode
 pytest tests/ --cov=pahebatcher --cov-report=term  # with coverage
 ruff check src/               # ALL rule select, target py311, 0 errors
 mypy src/                     # strict mode, full type coverage, 0 errors
@@ -429,12 +432,13 @@ tests/
     test_store.py             7 tests: segment I/O, atomic writes, assemble, cleanup
     test_store_extended.py    7 tests: atomic tmp handling, metadata, concat cleanup, pipe fallback
     test_downloader.py        7 tests: _find_existing, skip-existing, mocked download flow
+    test_retry.py             4 tests: episode/retry (3 attempts), resolver retry, batch auto-retry
     test_ui.py                5 tests: episode/search/summary tables, dedup
     test_utils.py             20 tests: sanitize, ep_prefix, fmt_bytes, compact_ep_range
     test_utils_extended.py    21 tests: fmt_bytes precision, sanitize edge, ep_prefix, compact ranges
     test_coherence.py         7 tests: benchmark (ruff/mypy green), version, config coherence
                               ─────────────────────────────────────────────────────────
-                              191 total
+                              195 total
 ```
 
 All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package installed via `pip install -e .`.
@@ -454,11 +458,11 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 ```
 ruff:       0 errors
 mypy:       0 errors
-pytest:     191 passed
-coverage:   52% (1938 stmts, 935 missed — scrapers/downloader/stream require network/mocks)
-loc:        3022 src, 1879 tests
-density:    6.32 tests / 100 LOC
-version:    3.1.0 coherent across pyproject.toml / config.py / __init__.py
+pytest:     195 passed
+coverage:   52% (1941 stmts, 938 missed — scrapers/downloader/stream require network/mocks)
+loc:        3025 src, 1879 tests
+density:    6.44 tests / 100 LOC
+version:    3.2.0 coherent across pyproject.toml / config.py / __init__.py
 ```
 
 Shared AES cache, atomic segment writes, and glob-stable scan cache are covered by the extended tests.
@@ -489,7 +493,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (191 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (195 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 
