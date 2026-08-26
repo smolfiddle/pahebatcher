@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from pahebatcher.config import REQUEST_DELAY
@@ -17,6 +17,7 @@ from pahebatcher.utils import sanitize
 
 if TYPE_CHECKING:
     from pathlib import Path
+
     from pahebatcher.solver import Solver
 
 log = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class AnimePaheScanner:
         self.session = session
 
     @classmethod
-    async def search(cls, solver: Solver, host: str, query: str) -> list[dict]:
+    async def search(cls, solver: Solver, host: str, query: str) -> list[dict[str, Any]]:
         import urllib.parse
 
         hosts = list(dict.fromkeys([host, "animepahe.pw", "animepahe.com", "animepahe.org"]))
@@ -61,13 +62,14 @@ class AnimePaheScanner:
                 data = await solver.fetch_json(url)
                 if data and "data" in data:
                     cls._current_host = h
-                    return data.get("data", [])
+                    result = data.get("data", [])
+                    return list(result) if isinstance(result, list) else []
             except Exception as exc:
                 log.debug("Search failed on %s: %s", h, exc)
                 continue
         return []
 
-    async def _fetch_page(self, page: int) -> dict | None:
+    async def _fetch_page(self, page: int) -> dict[str, Any] | None:
         url = (
             f"https://{self.host}/api?m=release&id={self.session}"
             f"&sort=episode_asc&page={page}"
@@ -101,7 +103,7 @@ class AnimePaheScanner:
         return "Unknown Anime"
 
     @staticmethod
-    def _parse_episode_page(data: dict, host: str, session: str) -> list[EpisodeInfo]:
+    def _parse_episode_page(data: dict[str, Any], host: str, session: str) -> list[EpisodeInfo]:
         eps: list[EpisodeInfo] = []
         for item in data.get("data", []):
             ep_sess = item.get("session", "")
@@ -198,19 +200,29 @@ class AnimePaheScanner:
     async def scan(self, cache_dir: Path, prefer_audio: str = "jpn", cache_ttl: int = 60) -> AnimeInfo:
         from pahebatcher.ui.console import console
 
-        # Try cache first
-        title = "Unknown Anime"
-        session_path = cache_dir / f"{sanitize('_')}_{self.session}"
-        anime = None
+        # Try cache first — stable lookup via glob so title variation doesn't invalidate cache
         if cache_ttl > 0:
-            cache_path = self._cache_path(cache_dir, self.session, title)
-            anime = self._load_cache(cache_path, cache_ttl)
-        if anime:
-            safe_title = sanitize(anime.title)
-            session_path = cache_dir / f"{safe_title}_{self.session}"
-            anime.has_session = session_path.exists()
-            console.print(f"  [dim]Using cached scan ({cache_ttl} min TTL)[/dim]")
-            return anime
+            # Prefer exact expected path but also scan for any prior cache with same session
+            candidates: list[Path] = []
+            # 1. legacy placeholder path (for completeness)
+            candidates.append(self._cache_path(cache_dir, self.session, "Unknown Anime"))
+            # 2. any folder ending with _{session}/_scan_cache.json
+            if cache_dir.exists():
+                candidates.extend(cache_dir.glob(f"*_{self.session}/_scan_cache.json"))
+            seen: set[Path] = set()
+            for cp in candidates:
+                if cp in seen or not cp.exists():
+                    continue
+                seen.add(cp)
+                cached = self._load_cache(cp, cache_ttl)
+                if cached:
+                    safe_title = sanitize(cached.title)
+                    session_path = cache_dir / f"{safe_title}_{self.session}"
+                    cached.has_session = session_path.exists()
+                    console.print(f"  [dim]Using cached scan ({cache_ttl} min TTL)[/dim]")
+                    return cached
+
+        title = "Unknown Anime"
 
         console.print("  [dim]Discovering all variants ...[/dim]", end="\r")
         all_sessions = await self.discover_all_sessions(self.solver, self.host, self.session)

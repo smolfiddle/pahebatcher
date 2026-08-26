@@ -12,7 +12,9 @@ from pahebatcher.utils import sanitize
 
 
 class SegmentStore:
-    def __init__(self, cache_root: Path, anime_title: str, anime_session: str, ep_num: str, audio: str = "jpn") -> None:
+    def __init__(
+        self, cache_root: Path, anime_title: str, anime_session: str, ep_num: str, audio: str = "jpn",
+    ) -> None:
         safe_title = sanitize(anime_title)
         self.root = cache_root / f"{safe_title}_{anime_session}"
         self.dir = self.root / f"Ep_{ep_num}_{audio.upper()}"
@@ -41,46 +43,43 @@ class SegmentStore:
         tmp.rename(self.seg_path(idx))
 
     def assemble(self, n_segments: int, out: Path) -> bool:
-        """Concatenate segments to MP4 via binary merge and timestamp regeneration."""
+        """Concatenate segments to MP4 via ffmpeg concat demuxer."""
         missing = [i for i in range(n_segments) if not self.seg_path(i).exists()]
         if missing:
             return False
 
-        # 1. Binary merge all .ts parts into one temporary continuous TS file
-        combined_ts = self.dir / "combined_stream.ts"
+        lst = self.dir / "concat.txt"
+        with open(lst, "w", encoding="utf-8") as f:
+            for i in range(n_segments):
+                f.write(f"file '{self.seg_path(i).as_posix()}'\n")
+
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+             "-c", "copy", "-movflags", "+faststart", str(out)],
+            capture_output=True, timeout=600,
+        )
+        if result.returncode == 0:
+            with contextlib.suppress(Exception):
+                lst.unlink()
+            return True
+
         try:
-            with open(combined_ts, "wb") as outfile:
-                for i in range(n_segments):
-                    with open(self.seg_path(i), "rb") as infile:
-                        outfile.write(infile.read())
-        except Exception as e:
-            print(f"\n[Error] Failed to merge TS segments: {e}")
-            return False
-
-        # 2. Run FFmpeg safely via subprocess.run (no pipe deadlock)
-        cmd = [
-            "ffmpeg", "-y",
-            "-fflags", "+genpts",                  # Regenerate unbroken timeline
-            "-i", str(combined_ts.resolve()),
-            "-c:v", "copy",                        # Copy video instantly without loss
-            "-c:a", "aac", "-b:a", "192k",         # Transcode AAC-Main to Jellyfin-supported AAC-LC
-            "-af", "aresample=async=1",            # Keep audio and video perfectly synchronized
-            "-movflags", "+faststart",
-            str(out.resolve())
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, timeout=600)
-
-        # 3. Clean up the temporary combined TS file
-        with contextlib.suppress(Exception):
-            combined_ts.unlink(missing_ok=True)
-
-        if result.returncode != 0:
-            err_output = result.stderr.decode("utf-8", errors="ignore")
-            print(f"\n[Error] FFmpeg remux failed: {err_output}")
-            return False
-
-        return True
+            proc = subprocess.Popen(
+                ["ffmpeg", "-y", "-i", "pipe:0", "-c", "copy", "-movflags", "+faststart", str(out)],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            assert proc.stdin is not None
+            for i in range(n_segments):
+                try:
+                    proc.stdin.write(self.seg_path(i).read_bytes())
+                except BrokenPipeError:
+                    break
+            proc.stdin.close()
+            proc.wait(timeout=600)
+            return proc.returncode == 0
+        finally:
+            with contextlib.suppress(Exception):
+                lst.unlink()
 
     def cleanup(self) -> None:
         with contextlib.suppress(Exception):

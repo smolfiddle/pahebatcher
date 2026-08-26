@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich import box
 from rich.panel import Panel
@@ -16,11 +16,11 @@ from rich.table import Table
 
 from pahebatcher.cache import TTLCache
 from pahebatcher.extract.kwik import extract_stream
-from pahebatcher.extract.m3u8 import resolve_m3u8, fetch_m3u8
+from pahebatcher.extract.m3u8 import fetch_m3u8, resolve_m3u8
 from pahebatcher.models import AnimeInfo, AppContext, EpisodeInfo, StreamInfo
 from pahebatcher.store import SegmentStore
 from pahebatcher.ui.dashboard import Dashboard
-from pahebatcher.utils import sanitize, ep_prefix, fmt_bytes, audio_badge
+from pahebatcher.utils import audio_badge, ep_prefix, fmt_bytes, sanitize
 
 if TYPE_CHECKING:
     from pahebatcher.http import HttpClient
@@ -33,20 +33,21 @@ class EpisodeDownloader:
     def __init__(
         self, ctx: AppContext, anime: AnimeInfo, dash: Dashboard,
         http: HttpClient, solver: Solver,
+        aes_key_cache: TTLCache | None = None,
     ) -> None:
         self.ctx = ctx
         self.anime = anime
         self.dash = dash
         self.http = http
         self.solver = solver
-        self._aes_key_cache = TTLCache(ttl=3600.0, max_size=128)
+        self._aes_key_cache = aes_key_cache or TTLCache(ttl=3600.0, max_size=128)
 
     async def run(self, ep: EpisodeInfo, info: StreamInfo) -> Path | None:
         key = ep.ep_str
         title = ep.title or info.title or f"Episode {ep.ep_str}"
         label = f"Ep {ep.ep_str} \u2014 {title}"
         store = SegmentStore(self.ctx.cache_dir, self.anime.title, self.anime.session, ep.ep_str, ep.audio)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         await loop.run_in_executor(None, store.save_metadata, self.anime.title, self.anime.session)
 
@@ -79,17 +80,19 @@ class EpisodeDownloader:
                 self.dash.seg_done(key, 0)
 
             key_map: dict[str, bytes] = {}
-            unique_keys = {s["key_url"] for s in segments if s["key_url"]}
+            unique_keys: set[str] = {str(s["key_url"]) for s in segments if s["key_url"]}
             for kurl in unique_keys:
-                if hit := await self._aes_key_cache.get(kurl):
-                    key_map[kurl] = hit
+                cached_any: Any = await self._aes_key_cache.get(kurl)
+                if isinstance(cached_any, bytes):
+                    key_map[kurl] = cached_any
                 else:
-                    key_map[kurl] = await self.http.get(kurl, hdrs)
-                    await self._aes_key_cache.set(kurl, key_map[kurl])
+                    key_data = await self.http.get(kurl, hdrs)
+                    key_map[kurl] = key_data
+                    await self._aes_key_cache.set(kurl, key_data)
 
             seg_sem = asyncio.Semaphore(self.ctx.hls_workers)
 
-            async def fetch_one(idx: int, seg: dict) -> None:
+            async def fetch_one(idx: int, seg: dict[str, Any]) -> None:
                 async with seg_sem:
                     raw = await self.http.get(seg["url"], hdrs)
                     if seg["key_url"]:
@@ -133,13 +136,13 @@ class BatchOrchestrator:
         for p in outdir.iterdir():
             if not p.is_file() or p.suffix not in (".mp4",):
                 continue
-            if p.name.startswith(f"Ep {prefix}") or p.name.startswith(f"Ep_{prefix}"):
-                if p.stat().st_size > 0:
-                    return p
+            is_target = p.name.startswith(f"Ep {prefix}") or p.name.startswith(f"Ep_{prefix}")
+            if is_target and p.stat().st_size > 0:
+                return p
         return None
 
     async def download(self, episodes: list[EpisodeInfo]) -> dict[str, Path | None]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         dash = Dashboard(len(episodes))
         start = time.time()
 
@@ -182,7 +185,10 @@ class BatchOrchestrator:
                 dash.mark_resolving(key, f"Ep {ep.ep_str} \u2014 Resolving...")
                 try:
                     info = await asyncio.wait_for(
-                        extract_stream(self.solver, ep.play_url, self.ctx.quality, self.ctx.audio_lang, self.ctx.cookie_string),
+                        extract_stream(
+                            self.solver, ep.play_url, self.ctx.quality,
+                            self.ctx.audio_lang, self.ctx.cookie_string,
+                        ),
                         timeout=120.0,
                     )
                     ep.audio = info.audio
@@ -197,7 +203,7 @@ class BatchOrchestrator:
                     dash.add_ep(key, real_label)
                     dash.mark_queued(key, real_label)
                     await download_queue.put((ep, info))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     log.error("Resolution timed out for Ep %s", ep.ep_str)
                     dash.mark_fail(key, f"Ep {ep.ep_str}: Resolution Timeout")
                     self._results[ep.session] = None
@@ -210,8 +216,12 @@ class BatchOrchestrator:
             for _ in range(self.ctx.max_parallel):
                 await download_queue.put(None)
 
+        shared_key_cache = TTLCache(ttl=3600.0, max_size=128)
+
         async def download_worker() -> None:
-            ep_dl = EpisodeDownloader(self.ctx, self.anime, dash, self.http, self.solver)
+            ep_dl = EpisodeDownloader(
+                self.ctx, self.anime, dash, self.http, self.solver, aes_key_cache=shared_key_cache,
+            )
             while True:
                 item = await download_queue.get()
                 if item is None:
