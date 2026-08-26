@@ -22,7 +22,13 @@ class SolverError(Exception):
 
 
 class Solver:
-    def __init__(self, base_url: str, proxy: str | None = None, user_cookies: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        proxy: str | None = None,
+        user_cookies: str = "",
+        request_delay: float = 2.0,  # <-- 1. Added configurable delay between requests (in seconds)
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._proxy = proxy
         self._session_id: str | None = None
@@ -31,6 +37,7 @@ class Solver:
         self._solver_cache = TTLCache(ttl=120.0, max_size=256)
         self._http_session: aiohttp.ClientSession | None = None
         self._user_cookies = self._parse_cookie_string(user_cookies)
+        self._request_delay = request_delay
 
     @staticmethod
     def _parse_cookie_string(s: str) -> list[dict[str, str]]:
@@ -102,14 +109,21 @@ class Solver:
             log.info("FlareSolverr session %s destroyed.", sid)
 
     async def request(
-        self, url: str, cache: bool = True,
-        max_timeout: int = 120000, wait: int = 2000,
+        self,
+        url: str,
+        cache: bool = True,
+        max_timeout: int = 120000,
+        wait: int = 4000,  # <-- 2. Increased default FlareSolverr page wait time (4 seconds)
     ) -> dict | None:
         if cache:
             if hit := await self._solver_cache.get(url):
                 return hit  # type: ignore[no-any-return]
 
         async with self._sem:
+            # 3. Add sleep delay before hitting FlareSolverr to prevent flooding
+            if self._request_delay > 0:
+                await asyncio.sleep(self._request_delay)
+
             await self._ensure_session()
             session_rotated = False
             timeout = max_timeout
@@ -154,7 +168,8 @@ class Solver:
                         await self.destroy_session()
                         session_rotated = True
                         timeout = min(timeout * 2, 300000)
-                        page_wait = 5000
+                        page_wait = 6000
+                        await asyncio.sleep(3.0)  # <-- Brief pause after Cloudflare flag before retrying
                         continue
                     log.warning(
                         "Cloudflare still blocking after session rotation.\n"

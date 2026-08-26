@@ -13,9 +13,9 @@ from pahebatcher.models import AnimeInfo, EpisodeInfo
 class TestParseAnimeUrl:
     def test_valid_url(self) -> None:
         host, uuid = parse_anime_url(
-            "https://animepahe.ru/anime/540562da-0708-2e0f-2178-01306c59b207"
+            "https://animepahe.pw/anime/540562da-0708-2e0f-2178-01306c59b207"
         )
-        assert host == "animepahe.ru"
+        assert host == "animepahe.pw"
         assert uuid == "540562da-0708-2e0f-2178-01306c59b207"
 
     def test_different_domain(self) -> None:
@@ -38,9 +38,9 @@ class TestParseAnimeUrl:
 
     def test_url_with_trailing_slash(self) -> None:
         host, uuid = parse_anime_url(
-            "https://animepahe.ru/anime/540562da-0708-2e0f-2178-01306c59b207/"
+            "https://animepahe.pw/anime/540562da-0708-2e0f-2178-01306c59b207/"
         )
-        assert host == "animepahe.ru"
+        assert host == "animepahe.pw"
         assert uuid == "540562da-0708-2e0f-2178-01306c59b207"
 
 
