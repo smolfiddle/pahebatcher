@@ -172,8 +172,8 @@ pahebatcher config set quality 720
 
 # Watchlist — follow a weekly airing show without re-running manually
 pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn -o ~/anime
-pahebatcher watchlist list
-pahebatcher watchlist check            # download only new episodes (cron-safe)
+pahebatcher wl list                    # wl/w = shorthand for watchlist
+pahebatcher check                      # shorthand for watchlist check (also: wl check, wl c, sync)
 
 # Enable debug logging for troubleshooting
 pahebatcher "https://animepahe.pw/anime/<uuid>" --all --verbose
@@ -245,30 +245,30 @@ Track weekly airing shows without re-running the tool manually. Add a series onc
 3. `check` is one-shot: for each entry it `scan`s with `cache_ttl=0` (forces fresh, unlike normal `60` min cache), diffs against files on disk via `BatchOrchestrator._find_existing()` (`downloader.py:154` — `Ep 001` / `Ep_001` prefix, size>0), **plus remembers deleted episodes while the series folder exists** (`downloaded` history `watchlist.py:30`), and reuses the 2-stage pipeline. Already-present MP4s are skipped, partial `.ts` segments are resumed. Running it again immediately downloads nothing.
 
 ```bash
-# Add a series to the watchlist (mirrors download flags)
+# Add a series to the watchlist (mirrors download flags) — long or short
 pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn -o ~/anime
-pahebatcher watchlist add https://animepahe.pw/anime/<uuid> --audio eng -q 720 -j 2 -w 24 --keep-temp --retry 2
-pahebatcher watchlist add https://animepahe.pw/anime/<uuid>          # uses pahebatcher.toml defaults
+pahebatcher wl add https://animepahe.pw/anime/<uuid> --audio eng -q 720 -j 2 -w 24 --keep-temp --retry 2  # wl/w = shorthand
+pahebatcher w add https://animepahe.pw/anime/<uuid>          # uses pahebatcher.toml defaults
 
 # List / inspect / remove / reset ( --yes skips confirmation for scripts)
-pahebatcher watchlist list
-pahebatcher watchlist show 1                         # by index, URL, or title substring
-pahebatcher watchlist show https://animepahe.pw/anime/<uuid>
-pahebatcher watchlist remove 1 --yes
-pahebatcher watchlist remove https://animepahe.pw/anime/<uuid>
-pahebatcher watchlist reset 1                        # clear deleted-history (re-download deleted)
+pahebatcher watchlist list  # or wl list, wl ls, wl l
+pahebatcher wl show 1       # s/info also work: wl s 1
+pahebatcher wl show https://animepahe.pw/anime/<uuid>
+pahebatcher wl remove 1 --yes   # also rm/r/del
+pahebatcher wl reset 1      # also rst/clear — clear deleted-history (re-download deleted)
 
 # Check for new episodes and download (one-shot, cron-friendly)
 pahebatcher watchlist check
-pahebatcher watchlist check --verbose                # debug logging
-pahebatcher watchlist check https://animepahe.pw/anime/<uuid>  # single series
-pahebatcher watchlist check 2                        # single series by index
+pahebatcher wl check        # same
+pahebatcher wl c            # shortest: wl c
+pahebatcher check           # top-level shorthand → watchlist check
+pahebatcher sync            # alias for check
+pahebatcher wl check --verbose
+pahebatcher wl check https://animepahe.pw/anime/<uuid>  # single series
 
 # Make wrappers (same as above, use project venv)
-make watchlist-list
-make watchlist-check
-make run ARGS="watchlist add https://animepahe.pw/anime/<uuid> -q 720"
-make run ARGS="watchlist check --verbose"
+make watchlist-list      # or make run ARGS="wl ls"
+make watchlist-check     # or make run ARGS="check" / ARGS="wl c"
 ```
 
 **State & persistence:**
@@ -380,23 +380,24 @@ pahebatcher [URL] [options]
 | `pahebatcher config set KEY VALUE` | Persist a setting (see Configuration section for key list) |
 | `pahebatcher config reset` | Restore all settings to factory defaults |
 
-### Watchlist commands
+### Watchlist commands (shorthand: `wl`, `w`, `watch` = `watchlist`; `check`/`sync` top-level)
 
 | Command | Description |
 |---|---|
-| `pahebatcher watchlist add <URL> [-q Q] [--audio LANG] [-o DIR] [-j N] [-w N] [--keep-temp] [--retry N]` | Add anime to watchlist (mirrors download flags) |
-| `pahebatcher watchlist check [--verbose] [URL|#]` | Scan all watched anime for new episodes and download |
-| `pahebatcher watchlist list` | List watchlist entries |
-| `pahebatcher watchlist show <URL|#>` | Show details for one entry |
-| `pahebatcher watchlist remove <URL|#> [--yes]` | Remove entry from watchlist |
-| `pahebatcher watchlist reset <URL|#>` | Clear deleted-history so deleted episodes will be re-downloaded |
+| `pahebatcher watchlist add <URL> [-q Q] [--audio LANG] [-o DIR] [-j N] [-w N] [--keep-temp] [--retry N]` <br> `pahebatcher wl a <URL>` | Add anime to watchlist (mirrors download flags) |
+| `pahebatcher watchlist check [--verbose] [URL|#]` <br> `pahebatcher check` / `pahebatcher wl c` / `pahebatcher sync` | Scan all watched anime for new episodes and download |
+| `pahebatcher watchlist list` <br> `pahebatcher wl ls` / `wl l` | List watchlist entries |
+| `pahebatcher watchlist show <URL|#>` <br> `pahebatcher wl s 1` | Show details for one entry |
+| `pahebatcher watchlist remove <URL|#> [--yes]` <br> `pahebatcher wl rm 1` | Remove entry from watchlist |
+| `pahebatcher watchlist reset <URL|#>` <br> `pahebatcher wl rst 1` | Clear deleted-history so deleted episodes will be re-downloaded |
 
 ### Watchlist specifics
 
+- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
 - **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:30`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
 - **State file:** `watchlist.json` (JSON list of entries with `downloaded: [1,2]`). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
-- **Make:** `make run ARGS="watchlist ..."` forwards any watchlist command through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
-- **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` works identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
+- **Make:** `make run ARGS="watchlist ..."` / `make run ARGS="wl c"` / `make run ARGS="check"` forward through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
+- **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` / `wl` / `check` work identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
 
 ### Concurrency tuning
 
