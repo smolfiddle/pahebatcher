@@ -64,7 +64,7 @@ class WatchlistEntry:
             title=data.get("title", data["session"]),
             quality=int(data.get("quality", 1080)),
             audio_lang=str(data.get("audio_lang", "jpn")),
-            output_dir=str(data.get("output_dir", ".")),
+            output_dir=str(data.get("output_dir", "./downloads")),
             max_parallel=int(data.get("max_parallel", 2)),
             hls_workers=int(data.get("hls_workers", 24)),
             keep_temp=bool(data.get("keep_temp", False)),
@@ -311,6 +311,13 @@ def cli_add(url: str, quality: int | None, audio_lang: str | None, output: str |
     if a not in ("jpn", "eng"):
         console.print(f"  [red]✗ Invalid audio:[/red] {a}")
         sys.exit(1)
+    # Persistent default guard: /tmp is volatile (tmpfs) and will be wiped on reboot
+    if o == "/tmp" or o.startswith("/tmp/"):
+        console.print(
+            f"  [yellow]⚠ Output is volatile tmpfs:[/yellow] {o}\n"
+            f"  [dim]Use a persistent path like ./downloads or ~/anime. "
+            f"With /tmp, folder-gone reset will redownload after reboot.[/dim]",
+        )
 
     canonical_url = f"https://{host}/anime/{session}"
     # Try to fetch title quickly via cache without network if possible? Use session as placeholder
