@@ -17,7 +17,7 @@ class ConfigManager:
         "audio_lang": "jpn",
         "max_parallel": 2,
         "hls_workers": 24,
-        "output_dir": ".",
+        "output_dir": "./downloads",
         "keep_temp": False,
         "resolve_ahead": 999,
         "cache_ttl": 60,

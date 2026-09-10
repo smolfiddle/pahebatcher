@@ -19,6 +19,7 @@ downloads/
 # Config — local file is git-ignored (see pahebatcher.toml.example for defaults)
 pahebatcher.toml
 !pahebatcher.toml.example
+watchlist.json
 
 # Session Cache
 pahe_cache/
