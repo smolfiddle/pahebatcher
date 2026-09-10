@@ -76,6 +76,8 @@ make run          # interactive wizard
 make run "URL"    # skip search, go directly to series
 make help         # show all targets
 make config-show  # display current settings
+make watchlist-list  # list watchlist
+make watchlist-check # check watchlist for new episodes
 make test         # run all 195 tests
 make lint         # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
@@ -143,11 +145,18 @@ pahebatcher "https://animepahe.pw/anime/<uuid>" --all -q 1080 -j 4 -w 32
 # Save default preferences so you don't need flags every time
 pahebatcher config set quality 720
 
+# Watchlist — follow a weekly airing show without re-running manually
+pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn -o ~/anime
+pahebatcher watchlist list
+pahebatcher watchlist check            # download only new episodes (cron-safe)
+
 # Enable debug logging for troubleshooting
 pahebatcher "https://animepahe.pw/anime/<uuid>" --all --verbose
 ```
 
 Output files are saved as `Ep 001 - Episode Title.mp4` in the output directory (default: `./downloads/<series_name>/`).
+
+Watchlist state lives at `watchlist.json` (cwd, git-ignored). Delete it or `watchlist remove` to stop tracking. Override location with `WATCHLIST_PATH=/tmp/my.json`.
 
 ---
 
@@ -202,14 +211,21 @@ Running `pahebatcher` without a URL opens interactive search. Type an anime titl
 
 ### Watchlist (Auto-Download Ongoing Anime)
 
-Track weekly airing shows without re-running the tool manually. Add a series once with your preferred quality/audio/output, then run a single check command (e.g. from cron) — it scans every watched anime, downloads only episodes not already on disk, resumes partial downloads via the existing segment store, and is safe to run repeatedly.
+Track weekly airing shows without re-running the tool manually. Add a series once with your preferred quality/audio/output, then run a single `check` command (e.g. from cron) — it scans every watched anime, downloads only episodes not already on disk, resumes partial downloads via the existing segment store, and is safe to run repeatedly.
+
+**Workflow:**
+
+1. `add` validates the AnimePahe URL (`scanner.py:30`), normalizes to `https://<host>/anime/<uuid>`, and saves prefs. Without flags it inherits `pahebatcher.toml` (`config_manager.py:15`).
+2. `list`/`show`/`remove` manage state. `show`/`remove` accept `1`-based index, full URL, session UUID, or title substring (`watchlist.py:103`).
+3. `check` is one-shot: for each entry it `scan`s with `cache_ttl=0` (forces fresh, unlike normal `60` min cache), diffs against files on disk via `BatchOrchestrator._find_existing()` (`downloader.py:154` — `Ep 001` / `Ep_001` prefix, size>0), and reuses the 2-stage pipeline. Already-present MP4s are skipped, partial `.ts` segments are resumed. Running it again immediately downloads nothing.
 
 ```bash
 # Add a series to the watchlist (mirrors download flags)
 pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn -o ~/anime
-pahebatcher watchlist add https://animepahe.pw/anime/<uuid> --audio eng -q 720
+pahebatcher watchlist add https://animepahe.pw/anime/<uuid> --audio eng -q 720 -j 2 -w 24 --keep-temp --retry 2
+pahebatcher watchlist add https://animepahe.pw/anime/<uuid>          # uses pahebatcher.toml defaults
 
-# List / inspect / remove
+# List / inspect / remove ( --yes skips confirmation for scripts)
 pahebatcher watchlist list
 pahebatcher watchlist show 1                         # by index, URL, or title substring
 pahebatcher watchlist show https://animepahe.pw/anime/<uuid>
@@ -220,17 +236,43 @@ pahebatcher watchlist remove https://animepahe.pw/anime/<uuid>
 pahebatcher watchlist check
 pahebatcher watchlist check --verbose                # debug logging
 pahebatcher watchlist check https://animepahe.pw/anime/<uuid>  # single series
+pahebatcher watchlist check 2                        # single series by index
+
+# Make wrappers (same as above, use project venv)
+make watchlist-list
+make watchlist-check
+make run ARGS="watchlist add https://animepahe.pw/anime/<uuid> -q 720"
+make run ARGS="watchlist check --verbose"
 ```
 
-State is persisted at `watchlist.json` (alongside `pahebatcher.toml`) and survives restarts. Each entry stores `url`, `quality`, `audio_lang`, `output_dir`, `max_parallel`, `hls_workers`, `keep_temp`, and `auto_retry` — same flags as `pahebatcher [URL]`.
+**State & persistence:**
 
-**Cron example (run hourly):**
+- File: `watchlist.json` in `cwd` (sibling to `pahebatcher.toml`), git-ignored, survives `pahe_cache` clear and restarts. Atomic write via `.tmp`→`rename` (`watchlist.py:98`). Corrupted JSON is treated as empty.
+- Env: `WATCHLIST_PATH=/tmp/custom.json pahebatcher watchlist list` overrides location (useful for tests/cron isolation).
+- Entry fields: `url`, `session`, `host`, `title` (auto-filled on `check`), `quality`, `audio_lang`, `output_dir` (base, sanitized title appended as `os.path.join(output_dir, sanitize(title))`), `max_parallel`, `hls_workers`, `keep_temp`, `auto_retry`, `added_at`, `last_checked`.
+- Title is placeholder `session` on `add` and refreshed on first `check` via `scan`. Updating an existing URL keeps `added_at` and preserves a real title.
+
+**Cron / systemd (one-shot only — no daemon):**
 
 ```bash
+# hourly, append logs
 0 * * * * cd /path/to/pahebatcher && venv/bin/python -m pahebatcher watchlist check >> watchlist.log 2>&1
+
+# or with make
+0 * * * * cd /path/to/pahebatcher && make watchlist-check >> watchlist.log 2>&1
+
+# custom state location
+0 * * * * WATCHLIST_PATH=/home/user/.config/pahebatcher/watchlist.json /home/user/pahebatcher/venv/bin/pahebatcher watchlist check >> /tmp/watchlist.log 2>&1
 ```
 
-Running `check` again immediately is a no-op (already-downloaded files are skipped via `Ep 001` prefix matching, partial segments are resumed). No daemon, notifications, or scheduler is included — wire it to `cron`/`systemd` yourself.
+Idempotency: second `check` immediately is a no-op. Failures are per-series isolated — one series failing does not abort others; re-run to retry.
+
+**Behavior vs normal download:**
+
+- Reuses `AnimePaheScanner`, `BatchOrchestrator`, `SegmentStore` — no new download logic.
+- `check` forces `cache_ttl=0` so new episodes are seen instantly (normal `pahebatcher [URL]` respects `cache_ttl=60`).
+- Audio fallback mirrors download: `get_variant(num, audio_lang)` or first variant.
+- No notifications, daemon, or scheduler — user wires to `cron`.
 
 ### Configuration
 
@@ -316,6 +358,13 @@ pahebatcher [URL] [options]
 | `pahebatcher watchlist show <URL|#>` | Show details for one entry |
 | `pahebatcher watchlist remove <URL|#> [--yes]` | Remove entry from watchlist |
 
+### Watchlist specifics
+
+- **Idempotency:** `check` diffs `scan` results vs. `output_dir` files via `_find_existing` (`Ep 001`/`Ep_001` prefix). Safe for `cron` every minute/hour; second run is no-op. Per-entry `last_checked` is updated even when up-to-date.
+- **State file:** `watchlist.json` (JSON list). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
+- **Make:** `make run ARGS="watchlist ..."` forwards any watchlist command through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
+- **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` works identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
+
 ### Concurrency tuning
 
 The two concurrency flags control different layers of parallelism:
@@ -378,6 +427,19 @@ pahe_cache/
 - **Atomic writes**: segments written to `.tmp` then renamed to `.ts`. Crash at any point leaves the store consistent.
 - **Resume**: on restart, `done_indices()` reads existing segment IDs. Only missing segments are fetched. Completed MP4 files are skipped entirely.
 - **Orphan cleanup**: cache directories older than 24 hours without active downloads are removed on exit.
+
+### Watchlist Check Pipeline
+
+```
+watchlist.json ──► for each entry:
+  AnimePaheScanner.scan(cache_ttl=0) ──► unique episodes by number (prefer audio) ──►
+  BatchOrchestrator._find_existing() diff vs. output_dir ──► pending = new eps ──►
+  BatchOrchestrator.download(pending) (same 2-stage resolver→downloader, SegmentStore resume)
+  ──► update title/last_checked ──► atomic save
+  ──► summary table (New/Done/Failed)
+```
+
+Shared `Solver`/`HttpClient` (max `hls_workers` across entries). Failures are per-entry isolated.
 
 ### Kwik to M3U8 Resolution Chain
 
@@ -528,6 +590,10 @@ Shared AES cache, atomic segment writes, and glob-stable scan cache are covered 
 | ARM64 (OrangepiZero3) `vo`/`hwdec` fail / slow software render | Mali/Panfrost not detected, `mpv` minimal build | `sudo apt install mpv ffmpeg ca-certificates`; try `mpv --hwdec=no --vo=gpu` or `--vo=drm --ao=alsa`; Armbian kernel recompile may be needed for GPU |
 | Slow single-episode downloads | Low segment concurrency | Increase `-w` to 24-32; HLS segments are ~100 KB each and benefit from high parallelism |
 | Cache directory growing too large | Old sessions accumulating | Use Session Manager (option 3 from main menu) to clear stale entries; >24h orphans are auto-cleaned |
+| `watchlist.json` corrupted / `No watchlist entries` after edit | Hand-edited JSON invalid | Delete or `python -m json.tool watchlist.json` to validate; `load()` treats invalid as empty (`watchlist.py:76`) — re-add entries |
+| `watchlist check` says `Up to date` but new episode expected | Scan cache stale or wrong `audio_lang` / `output_dir` | `check` forces `cache_ttl=0`; verify entry with `watchlist show 1` (audio/output); check `watchlist.json` output_dir matches where you look |
+| `watchlist check` downloads nothing after move | Output files moved / renamed | `_find_existing` matches `Ep 001`/`Ep_001` prefix only (`downloader.py:154`); rename back or re-add entry |
+| `watchlist add` updates instead of duplicates | Same `session` UUID | Intentional dedupe (`watchlist.py:134`); use `watchlist list` to see, `remove` first if you need a clean add |
 
 ---
 
