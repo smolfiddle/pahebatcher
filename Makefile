@@ -1,7 +1,7 @@
 VENV := venv
 PYTHON := $(VENV)/bin/python
 
-.PHONY: help install run config-show test lint typecheck benchmark clean
+.PHONY: help install run config-show watchlist-list watchlist-check test lint typecheck benchmark clean
 
 help: install
 	@echo "Usage: make <target>"
@@ -10,13 +10,24 @@ help: install
 	@echo "  make run                                interactive wizard"
 	@echo "  make run https://animepahe.pw/anime/<uuid>               with URL"
 	@echo '  make run URL="https://..." ARGS="--all -q 720"           with flags'
+	@echo '  make run ARGS="watchlist list"          list watchlist (also: make watchlist-list)'
+	@echo '  make run ARGS="watchlist check"         check watchlist (also: make watchlist-check)'
 	@echo "  make config-show                        display current settings"
+	@echo "  make watchlist-list                     list watchlist entries"
+	@echo "  make watchlist-check                    check watchlist for new episodes"
 	@echo ""
 	@echo "Config (set once, reused every session):"
 	@echo "  $(PYTHON) -m pahebatcher config set quality 720"
 	@echo "  $(PYTHON) -m pahebatcher config set audio_lang eng"
 	@echo "  $(PYTHON) -m pahebatcher config set max_parallel 4"
 	@echo "  $(PYTHON) -m pahebatcher config reset"
+	@echo ""
+	@echo "Watchlist (auto-download ongoing series):"
+	@echo '  make run ARGS="watchlist add https://animepahe.pw/anime/<uuid> -q 720 --audio eng -o ~/anime"'
+	@echo "  make watchlist-list"
+	@echo "  make watchlist-check"
+	@echo '  $(PYTHON) -m pahebatcher watchlist show 1'
+	@echo '  $(PYTHON) -m pahebatcher watchlist remove 1 --yes'
 	@echo ""
 	@echo "Dev:"
 	@echo "  make test         run 195 tests"
@@ -43,6 +54,12 @@ run: install
 
 config-show: install
 	$(PYTHON) -m pahebatcher config show
+
+watchlist-list: install
+	$(PYTHON) -m pahebatcher watchlist list
+
+watchlist-check: install
+	$(PYTHON) -m pahebatcher watchlist check
 
 test: install
 	$(PYTHON) -m pytest tests/ -v
