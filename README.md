@@ -105,20 +105,41 @@ make run URL="https://animepahe.pw/anime/<uuid>" ARGS="--all -q 720"
 ```bash
 pipx install .
 pahebatcher
-# after updating the repo (new feature / fix), refresh the isolated venv:
-pipx install . --force && hash -r
 ```
+
+`pipx` installs `pahebatcher` into an isolated venv at `~/.local/share/pipx/venvs/pahebatcher` and symlinks `~/.local/bin/pahebatcher`. That venv **is not auto-updated** when you `git pull` / `git checkout`.
+
+**Updating after `git pull` or switching branches (e.g. `feature/watchlist`):**
+
+```bash
+# from the repo root, after git pull / git checkout:
+pipx install . --force && hash -r
+pahebatcher --help | grep watchlist   # should list watchlist commands
+# alternative (same effect):
+pipx reinstall pahebatcher
+```
+
+If you skip this, `pahebatcher watchlist check` will say `unrecognized arguments: check` (you're still running the old 3.0.0 binary) while `make watchlist-check` works (it uses `venv`).
 
 ### Option C: pip editable (development install)
 
 ```bash
 pip install -e ".[dev]"
 pahebatcher
+# no --force needed: edits to src/ are live; only reinstall if pyproject.toml changes
 ```
 
 All three methods produce the `pahebatcher` command. You can also run via `python -m pahebatcher`.
 
-> **Stale binary?** `make run` / `venv/bin/python -m pahebatcher` always uses the project's `venv` (current code). If `pahebatcher watchlist check` says `unrecognized arguments: check` but `make watchlist-check` works, your global `~/.local/bin/pahebatcher` (pipx) is stale — run `pipx install . --force` or use `venv/bin/pahebatcher` / `make watchlist-*`.
+> **Which binary am I running?**
+> ```bash
+> which -a pahebatcher          # pipx → ~/.local/bin/pahebatcher, venv → ./venv/bin/pahebatcher
+> pahebatcher --help | grep watchlist        # global: should list watchlist if up-to-date
+> make watchlist-list            # always uses venv → correct for your checkout
+> venv/bin/pahebatcher watchlist list        # direct venv binary
+> venv/bin/python -m pahebatcher watchlist list  # most explicit, never stale
+> ```
+> If global is stale, use the `venv`/`make` form or refresh pipx as above.
 
 ---
 
