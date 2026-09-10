@@ -293,11 +293,26 @@ make watchlist-check     # or make run ARGS="check" / ARGS="wl c"
 
 Idempotency: second `check` immediately is a no-op. Failures are per-series isolated — one series failing does not abort others; re-run to retry.
 
-**Low-memory / deleted episodes (coherent):**
+**Deleted episodes — coherent low-memory handling:**
 
-- If you delete a single `Ep 003 - Title.mp4` to free space, `check` remembers `3` in `downloaded` and **skips** it while the series folder (`output_dir/sanitize(title)`) still exists — reports `0 new, 1 skipped (deleted)`. No re-download.
-- If you delete the **entire series folder** (`rm -rf ~/anime/Mock_Anime/`), next `check` sees `Path(full_output).exists()==False` and **resets** `downloaded` to `[]` (`watchlist.py:456`), so missing episodes are treated as new again. This makes folder deletion the coherent “forget” signal.
-- To re-download a deleted single episode without wiping the folder: `pahebatcher watchlist reset 1` (or URL/#) clears history.
+`watchlist.json` keeps `downloaded: [1, 2, 3]` — every episode number that was once seen on disk (`watchlist show 1` shows it). This is the *memory* that makes single-file deletion not redownload:
+
+```bash
+pahebatcher wl check          # downloads Ep 1,2,3 → downloaded=[1,2,3]
+rm downloads/Saga.../Ep_003*.mp4   # free space: delete one file, keep folder
+pahebatcher wl check          # → 0 new, 1 skipped (deleted)  (folder exists → remembers)
+pahebatcher wl show 1         # Downloaded: 3 eps (1, 2, 3) still remembered
+pahebatcher check             # run again → still 0 new, same skip
+```
+
+- **While the series folder exists** (`downloads/Saga.../`), any `downloaded` number not on disk is treated as *intentionally deleted* and **skipped**. `check` reports `1 skipped (deleted)` in dim text.
+- **When you delete the whole series folder** (`rm -rf downloads/Saga.../`), next `check` prints `Folder not found (.../Saga...) — resetting skip history` (`watchlist.py:456`) and clears `downloaded` to `[]` — all missing episodes become new again. Folder deletion = coherent “forget” signal.
+- **Want a deleted episode back without wiping the folder?** `pahebatcher wl reset 1` (or `wl rst 1`, URL/#) clears history for that entry; next `check` will re-download the missing file:
+  ```bash
+  pahebatcher wl reset 1
+  pahebatcher wl check   # → 1 new (Ep 3) redownloaded
+  ```
+- Backfill: on first `check` with existing files, they are added to `downloaded` automatically, so old entries migrate without manual edit.
 
 **Behavior vs normal download:**
 
