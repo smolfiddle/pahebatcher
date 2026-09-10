@@ -19,6 +19,7 @@ Terminal tool for batch-downloading and streaming anime from [AnimePahe](https:/
   - [Stream Mode](#stream-mode)
   - [Session Manager](#session-manager)
   - [Search Mode](#search-mode)
+  - [Watchlist](#watchlist-auto-download-ongoing-anime)
   - [Configuration](#configuration)
 - [CLI Reference](#cli-reference)
 - [Architecture](#architecture)
@@ -199,6 +200,38 @@ Accessible from the main menu (option 3). Lists all cached sessions with:
 
 Running `pahebatcher` without a URL opens interactive search. Type an anime title, browse results in a table (title, type, year, episodes, score), select by number. The tool auto-discovers SUB and DUB variants of the selected series.
 
+### Watchlist (Auto-Download Ongoing Anime)
+
+Track weekly airing shows without re-running the tool manually. Add a series once with your preferred quality/audio/output, then run a single check command (e.g. from cron) — it scans every watched anime, downloads only episodes not already on disk, resumes partial downloads via the existing segment store, and is safe to run repeatedly.
+
+```bash
+# Add a series to the watchlist (mirrors download flags)
+pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn -o ~/anime
+pahebatcher watchlist add https://animepahe.pw/anime/<uuid> --audio eng -q 720
+
+# List / inspect / remove
+pahebatcher watchlist list
+pahebatcher watchlist show 1                         # by index, URL, or title substring
+pahebatcher watchlist show https://animepahe.pw/anime/<uuid>
+pahebatcher watchlist remove 1 --yes
+pahebatcher watchlist remove https://animepahe.pw/anime/<uuid>
+
+# Check for new episodes and download (one-shot, cron-friendly)
+pahebatcher watchlist check
+pahebatcher watchlist check --verbose                # debug logging
+pahebatcher watchlist check https://animepahe.pw/anime/<uuid>  # single series
+```
+
+State is persisted at `watchlist.json` (alongside `pahebatcher.toml`) and survives restarts. Each entry stores `url`, `quality`, `audio_lang`, `output_dir`, `max_parallel`, `hls_workers`, `keep_temp`, and `auto_retry` — same flags as `pahebatcher [URL]`.
+
+**Cron example (run hourly):**
+
+```bash
+0 * * * * cd /path/to/pahebatcher && venv/bin/python -m pahebatcher watchlist check >> watchlist.log 2>&1
+```
+
+Running `check` again immediately is a no-op (already-downloaded files are skipped via `Ep 001` prefix matching, partial segments are resumed). No daemon, notifications, or scheduler is included — wire it to `cron`/`systemd` yourself.
+
 ### Configuration
 
 Settings are persisted at `pahebatcher.toml` in the current directory and loaded on every run. Saved defaults apply to every session, CLI flags override them, and the interactive wizard auto-saves whatever is chosen.
@@ -272,6 +305,16 @@ pahebatcher [URL] [options]
 | `pahebatcher config show` | Display all settings with current values and defaults |
 | `pahebatcher config set KEY VALUE` | Persist a setting (see Configuration section for key list) |
 | `pahebatcher config reset` | Restore all settings to factory defaults |
+
+### Watchlist commands
+
+| Command | Description |
+|---|---|
+| `pahebatcher watchlist add <URL> [-q Q] [--audio LANG] [-o DIR] [-j N] [-w N] [--keep-temp] [--retry N]` | Add anime to watchlist (mirrors download flags) |
+| `pahebatcher watchlist check [--verbose] [URL|#]` | Scan all watched anime for new episodes and download |
+| `pahebatcher watchlist list` | List watchlist entries |
+| `pahebatcher watchlist show <URL|#>` | Show details for one entry |
+| `pahebatcher watchlist remove <URL|#> [--yes]` | Remove entry from watchlist |
 
 ### Concurrency tuning
 
@@ -380,6 +423,7 @@ src/pahebatcher/
     downloader.py            EpisodeDownloader, BatchOrchestrator (2-stage pipeline)
     stream.py                MPV stream player with live panel and SUB/DUB navigation
     sessions.py              Session manager (list, resume, delete, clear)
+    watchlist.py             Persistent watchlist (add/list/show/remove/check, JSON state, cron-safe)
     ui/
         console.py           Rich console instance and ASCII art banner
         dashboard.py         Live progress dashboard with per-episode state transitions
