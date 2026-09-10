@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,12 +41,22 @@ class WatchlistEntry:
     auto_retry: int
     added_at: float
     last_checked: float | None = None
+    downloaded: list[float] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WatchlistEntry:
+        # downloaded history: list of episode numbers (float)
+        raw_dl = data.get("downloaded", [])
+        dl_list: list[float] = []
+        if isinstance(raw_dl, list):
+            for v in raw_dl:
+                try:
+                    dl_list.append(float(v))
+                except Exception:
+                    continue
         return cls(
             url=data["url"],
             session=data["session"],
@@ -61,6 +71,7 @@ class WatchlistEntry:
             auto_retry=int(data.get("auto_retry", 2)),
             added_at=float(data.get("added_at", time.time())),
             last_checked=data.get("last_checked"),
+            downloaded=dl_list,
         )
 
 
@@ -134,12 +145,15 @@ class WatchlistManager:
         entries = WatchlistManager.load(path)
         for i, e in enumerate(entries):
             if e.session == entry.session:
-                # Update existing — keep added_at, replace opts but preserve title if new is placeholder
+                # Update existing — keep added_at, downloaded history, and real title
                 old_added = e.added_at
-                # Preserve title if existing has real title and new is placeholder
+                old_downloaded = list(e.downloaded)
                 if e.title and e.title != e.session and entry.title == entry.session:
                     entry.title = e.title
                 entry.added_at = old_added
+                # Preserve downloaded history unless caller explicitly set it
+                if not entry.downloaded and old_downloaded:
+                    entry.downloaded = old_downloaded
                 entries[i] = entry
                 WatchlistManager.save(entries, path)
                 return False, entry
@@ -213,6 +227,17 @@ def cli_show(identifier: str, path: Path | None = None) -> None:
     added = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.added_at)) if e.added_at else "—"
     checked = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.last_checked)) if e.last_checked else "never"
     audio_str = "SUB" if e.audio_lang == "jpn" else "DUB"
+    dl_info = (
+        f"{len(e.downloaded)} eps" if e.downloaded else "none"
+    )
+    # Show truncated list for brevity
+    dl_detail = ""
+    if e.downloaded:
+        nums = sorted(e.downloaded)[:12]
+        dl_detail = ", ".join(str(int(n) if n == int(n) else n) for n in nums)
+        if len(e.downloaded) > 12:
+            dl_detail += f" … +{len(e.downloaded)-12}"
+        dl_detail = f" [dim]({dl_detail})[/dim]"
     console.print(Panel(
         f"  [dim]Title:[/dim]       [bold white]{e.title}[/bold white]\n"
         f"  [dim]URL:[/dim]         [cyan]{e.url}[/cyan]\n"
@@ -223,6 +248,7 @@ def cli_show(identifier: str, path: Path | None = None) -> None:
         f"  [dim]Output:[/dim]      {e.output_dir}\n"
         f"  [dim]Parallel:[/dim]    {e.max_parallel}  [dim]Workers:[/dim] {e.hls_workers}\n"
         f"  [dim]Keep-temp:[/dim] {e.keep_temp}  [dim]Retry:[/dim] {e.auto_retry}\n"
+        f"  [dim]Downloaded:[/dim]  {dl_info}{dl_detail}\n"
         f"  [dim]Added:[/dim]       {added}\n"
         f"  [dim]Last checked:[/dim] {checked}",
         title=f"[bold cyan]{e.title}[/bold cyan]",
@@ -239,6 +265,21 @@ def cli_remove(identifier: str, path: Path | None = None) -> None:
         sys.exit(1)
     remaining = len(WatchlistManager.load(path))
     console.print(f"  [green]✓ Removed[/green] '{removed.title}' [dim]({remaining} remaining)[/dim]")
+
+
+def cli_reset(identifier: str, path: Path | None = None) -> None:
+    from pahebatcher.ui.console import console
+
+    entries = WatchlistManager.load(path)
+    found = WatchlistManager.find_entry(entries, identifier)
+    if not found:
+        console.print(f"\n  [red]✗ No entry found for:[/red] {identifier}")
+        sys.exit(1)
+    _idx, entry = found
+    cleared = len(entry.downloaded)
+    entry.downloaded = []
+    WatchlistManager.save(entries, path)
+    console.print(f"  [green]✓ Reset[/green] '{entry.title}' [dim](cleared {cleared} history)[/dim]")
 
 
 def cli_add(url: str, quality: int | None, audio_lang: str | None, output: str | None,
@@ -428,6 +469,7 @@ async def run_watchlist_check(
                             unique_by_num[ep.number] = ep
                 # Actually better to use get_variant logic per number
                 pending: list[Any] = []
+                skipped_deleted = 0
                 # For _find_existing we need ctx output_dir with sanitized title appended
                 safe_title = sanitize(anime.title)
                 full_output = os.path.join(entry.output_dir, safe_title)
@@ -446,6 +488,16 @@ async def run_watchlist_check(
                     cookie_string=cookie_string,
                     auto_retry=entry.auto_retry,
                 )
+                # Folder-reset: if series folder no longer exists, forget deleted skip history
+                downloaded_set = set(float(v) for v in (entry.downloaded or []))
+                folder_exists = Path(full_output).exists()
+                if not folder_exists and downloaded_set:
+                    console.print(
+                        f"  [dim]Folder not found ({full_output}) — resetting skip history[/dim]",
+                    )
+                    downloaded_set.clear()
+                    entry.downloaded = []
+                    WatchlistManager.save(entries, path)
                 # Temporary orchestrator just for _find_existing helper (no network)
                 tmp_orch = BatchOrchestrator(ctx_for_check, anime, http, solver)
 
@@ -458,19 +510,36 @@ async def run_watchlist_check(
                         if not variants:
                             continue
                         ep_variant = variants[0]
-                    # Use existing file check (idempotency)
+                    # Use existing file check (idempotency) + deleted skip
                     existing = None
                     try:
                         existing = tmp_orch._find_existing(ep_variant)
                     except Exception:
                         existing = None
                     if existing is not None:
+                        # Backfill history: file present means it was downloaded
+                        if num not in downloaded_set:
+                            downloaded_set.add(num)
                         continue
-                    # Also check via EpisodeDownloader's file naming? _find_existing covers it
+                    # Not on disk — if folder exists and we have history, skip deleted
+                    if folder_exists and num in downloaded_set:
+                        skipped_deleted += 1
+                        continue
                     pending.append(ep_variant)
 
+                # Persist backfilled history even when up-to-date
+                if downloaded_set != set(float(v) for v in (entry.downloaded or [])):
+                    entry.downloaded = sorted(downloaded_set)
+                    WatchlistManager.save(entries, path)
+
                 if not pending:
-                    console.print(f"  [dim]Up to date — {len(unique_by_num)} episodes, 0 new[/dim]")
+                    if skipped_deleted:
+                        console.print(
+                            f"  [dim]Up to date — {len(unique_by_num)} episodes, "
+                            f"{skipped_deleted} skipped (deleted)[/dim]",
+                        )
+                    else:
+                        console.print(f"  [dim]Up to date — {len(unique_by_num)} episodes, 0 new[/dim]")
                     per_entry_summary.append({"title": entry.title, "new": 0, "done": 0, "failed": 0})
                     entry.last_checked = time.time()
                     WatchlistManager.save(entries, path)
@@ -494,6 +563,11 @@ async def run_watchlist_check(
                     per_entry_summary.append(
                         {"title": entry.title, "new": len(pending), "done": done, "failed": failed},
                     )
+                    # Update history for successfully downloaded episodes
+                    for ep in pending:
+                        if results.get(ep.session) is not None:
+                            downloaded_set.add(float(ep.number))
+                    entry.downloaded = sorted(downloaded_set)
                     if failed:
                         console.print(f"  [yellow]⚠ {failed} failed, {done} done[/yellow]")
                     else:
@@ -509,6 +583,9 @@ async def run_watchlist_check(
                     total_failed += len(pending)
                 finally:
                     entry.last_checked = time.time()
+                    # Persist history even if download failed partially (only successes counted)
+                    if 'downloaded_set' in locals():
+                        entry.downloaded = sorted(downloaded_set)
                     WatchlistManager.save(entries, path)
                     # Orphan cleanup per entry not needed here
 

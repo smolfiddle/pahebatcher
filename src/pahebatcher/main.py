@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  %(prog)s watchlist list                                            # list watched anime\n"
             "  %(prog)s watchlist show <URL|#>                                    # inspect entry\n"
             "  %(prog)s watchlist remove <URL|#>                                 # remove entry\n"
+            "  %(prog)s watchlist reset <URL|#>                                  # clear skip history\n"
         ),
     )
 
@@ -168,6 +169,9 @@ def build_watchlist_parser() -> argparse.ArgumentParser:
     p_remove = sub.add_parser("remove", help="Remove entry from watchlist")
     p_remove.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
     p_remove.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+
+    p_reset = sub.add_parser("reset", help="Clear skip history for an entry (re-download deleted)")
+    p_reset.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
 
     p_check = sub.add_parser("check", help="Check all watched anime for new episodes and download")
     p_check.add_argument("identifier", nargs="?", default=None, help="Optional: check only this URL/#")
@@ -455,6 +459,10 @@ def main() -> None:
                     from pahebatcher.watchlist import cli_remove
 
                     cli_remove(wl_args.identifier)
+                elif wl_args.watchlist_action == "reset":
+                    from pahebatcher.watchlist import cli_reset
+
+                    cli_reset(wl_args.identifier)
                 elif wl_args.watchlist_action == "check":
                     from pahebatcher.watchlist import run_watchlist_check
 
