@@ -59,6 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
             "  %(prog)s config show                                               # view settings\n"
             "  %(prog)s config set quality 720                                    # save default quality\n"
             "  %(prog)s config reset                                              # reset to defaults\n"
+            "\n"
+            "Watchlist (auto-download ongoing series):\n"
+            "  %(prog)s watchlist add <URL> [-q 720] [--audio eng] [-o DIR]      # add to watchlist\n"
+            "  %(prog)s watchlist check                                           # download new episodes\n"
+            "  %(prog)s watchlist list                                            # list watched anime\n"
+            "  %(prog)s watchlist show <URL|#>                                    # inspect entry\n"
+            "  %(prog)s watchlist remove <URL|#>                                 # remove entry\n"
         ),
     )
 
@@ -108,6 +115,65 @@ def build_config_parser() -> argparse.ArgumentParser:
     set_p.add_argument("value")
     cfg_sub.add_parser("reset", help="Reset all settings to defaults")
     return cfg
+
+
+def build_watchlist_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="pahebatcher watchlist",
+        description="Manage watchlist for auto-downloading ongoing anime",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn -o ~/anime\n"
+            "  pahebatcher watchlist list\n"
+            "  pahebatcher watchlist show 1\n"
+            "  pahebatcher watchlist check\n"
+            "  pahebatcher watchlist remove https://animepahe.pw/anime/<uuid>\n"
+            "\n"
+            "Cron example (run hourly):\n"
+            "  0 * * * * cd /path/to/pahebatcher && venv/bin/python -m pahebatcher \\\n"
+            "    watchlist check >> watchlist.log 2>&1\n"
+        ),
+    )
+    sub = parser.add_subparsers(dest="watchlist_action", required=True)
+
+    p_add = sub.add_parser("add", help="Add anime to watchlist")
+    p_add.add_argument("url", help="AnimePahe series URL")
+    p_add.add_argument(
+        "-q", "--quality", type=int, choices=[360, 720, 1080],
+        default=None, help="Quality: 360, 720, or 1080",
+    )
+    p_add.add_argument(
+        "--audio", dest="audio_lang", type=str, choices=["jpn", "eng"],
+        default=None, help="Audio: jpn=subbed, eng=dubbed",
+    )
+    p_add.add_argument("-o", "--output", default=None, help="Output directory")
+    p_add.add_argument("-j", "--parallel", type=int, default=None, help="Concurrent downloads (1-6)")
+    p_add.add_argument(
+        "-w", "--workers", type=int, default=None,
+        help="HLS segment workers per episode (8-32)",
+    )
+    p_add.add_argument("--keep-temp", action="store_true", help="Keep raw segment files")
+    p_add.add_argument(
+        "--retry", type=int, choices=[0, 1, 2], default=None,
+        help="Auto-retry failed episodes (0-2)",
+    )
+    p_add.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+
+    sub.add_parser("list", help="List watchlist entries")
+
+    p_show = sub.add_parser("show", help="Show watchlist entry details")
+    p_show.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
+
+    p_remove = sub.add_parser("remove", help="Remove entry from watchlist")
+    p_remove.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
+    p_remove.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+
+    p_check = sub.add_parser("check", help="Check all watched anime for new episodes and download")
+    p_check.add_argument("identifier", nargs="?", default=None, help="Optional: check only this URL/#")
+    p_check.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+
+    return parser
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -332,7 +398,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-        # Config subcommand uses its own parser to avoid argparse
+        # Config / watchlist subcommands use own parsers to avoid argparse
         # subparser greediness with URL positional arguments.
         if len(sys.argv) > 1 and sys.argv[1] == "config":
             cfg_parser = build_config_parser()
@@ -343,6 +409,68 @@ def main() -> None:
                 ConfigManager.cli_set(cfg_args.key, cfg_args.value)
             elif cfg_args.config_action == "reset":
                 ConfigManager.cli_reset()
+            return
+
+        if len(sys.argv) > 1 and sys.argv[1] == "watchlist":
+            wl_parser = build_watchlist_parser()
+            wl_args = wl_parser.parse_args(sys.argv[2:])
+            try:
+                if wl_args.watchlist_action == "add":
+                    from pahebatcher.watchlist import cli_add
+
+                    cli_add(
+                        url=wl_args.url,
+                        quality=wl_args.quality,
+                        audio_lang=wl_args.audio_lang,
+                        output=wl_args.output,
+                        parallel=wl_args.parallel,
+                        workers=wl_args.workers,
+                        keep_temp=bool(wl_args.keep_temp),
+                        retry=wl_args.retry,
+                    )
+                elif wl_args.watchlist_action == "list":
+                    from pahebatcher.watchlist import cli_list
+
+                    cli_list()
+                elif wl_args.watchlist_action == "show":
+                    from pahebatcher.watchlist import cli_show
+
+                    cli_show(wl_args.identifier)
+                elif wl_args.watchlist_action == "remove":
+                    if not wl_args.yes:
+                        from rich.prompt import Confirm
+
+                        from pahebatcher.watchlist import WatchlistManager
+
+                        entries = WatchlistManager.load()
+                        found = WatchlistManager.find_entry(entries, wl_args.identifier)
+                        if found:
+                            _, ent = found
+                            if not Confirm.ask(
+                                f"  [red]Remove '{ent.title}' from watchlist?[/red]",
+                                default=False,
+                            ):
+                                console.print("  [dim]Cancelled.[/dim]")
+                                return
+                    from pahebatcher.watchlist import cli_remove
+
+                    cli_remove(wl_args.identifier)
+                elif wl_args.watchlist_action == "check":
+                    from pahebatcher.watchlist import run_watchlist_check
+
+                    asyncio.run(run_watchlist_check(
+                        verbose=bool(wl_args.verbose), filter_id=wl_args.identifier,
+                    ))
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                console.print("\n  [yellow]Interrupted.[/yellow]")
+                sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                console.print(f"\n  [red]\u2717 Fatal Error:[/red] {exc}")
+                if getattr(wl_args, "verbose", False):
+                    raise
+                sys.exit(1)
             return
 
         parser = build_parser()
