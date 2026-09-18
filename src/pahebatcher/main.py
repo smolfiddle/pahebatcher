@@ -185,9 +185,12 @@ def build_watchlist_parser() -> argparse.ArgumentParser:
 
     p_relink = sub.add_parser(
         "relink", aliases=["link", "migrate", "update-url"],
-        help="Relink entry to new URL (preserves history) — auto if no URL given",
+        help="Relink dead entry to new URL (preserves history) — no args = relink all",
     )
-    p_relink.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
+    p_relink.add_argument(
+        "identifier", nargs="?", default=None,
+        help="URL, session, title or # (omit to relink all dead entries)",
+    )
     p_relink.add_argument(
         "new_url", nargs="?", default=None,
         help="New AnimePahe series URL (omit to auto-find by title)",
@@ -426,6 +429,7 @@ async def run(args: argparse.Namespace) -> None:
 
 WATCHLIST_ALIASES = {"watchlist", "wl", "w", "watch"}
 CHECK_ALIASES = {"check", "sync", "update"}
+RELINK_ALIASES = {"relink", "link", "migrate"}
 
 
 def main() -> None:
@@ -443,6 +447,7 @@ def main() -> None:
             return
 
         # Top-level shorthand: `pahebatcher check` → `pahebatcher watchlist check`
+        # and `pahebatcher relink` → `pahebatcher watchlist relink` (no id = relink all)
         if len(sys.argv) > 1 and sys.argv[1] in CHECK_ALIASES:
             from pahebatcher.watchlist import run_watchlist_check
 
@@ -466,6 +471,28 @@ def main() -> None:
                 console.print(f"\n  [red]\u2717 Fatal Error:[/red] {exc}")
                 if getattr(wl_args, "verbose", False):
                     raise
+                sys.exit(1)
+            return
+
+        if len(sys.argv) > 1 and sys.argv[1] in RELINK_ALIASES:
+            from pahebatcher.watchlist import cli_relink
+
+            # Top-level relink: `pahebatcher relink [id] [new-url]`
+            wl_parser = build_watchlist_parser()
+            try:
+                # Normalize to `relink` subcommand
+                wl_args = wl_parser.parse_args(["relink", *sys.argv[2:]])
+            except SystemExit:
+                raise
+            try:
+                cli_relink(wl_args.identifier, wl_args.new_url)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                console.print("\n  [yellow]Interrupted.[/yellow]")
+                sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                console.print(f"\n  [red]\u2717 Fatal Error:[/red] {exc}")
                 sys.exit(1)
             return
 
