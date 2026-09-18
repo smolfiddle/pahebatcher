@@ -664,20 +664,22 @@ async def run_watchlist_check(
 
     print_banner()
 
-    entries = WatchlistManager.load(path)
-    if not entries:
+    all_entries = WatchlistManager.load(path)
+    if not all_entries:
         console.print("\n  [dim]No watchlist entries. Add one with:[/dim]")
         console.print("  [cyan]pahebatcher watchlist add <URL>[/cyan]")
         return
 
     if filter_id:
-        found = WatchlistManager.find_entry(entries, filter_id)
+        found = WatchlistManager.find_entry(all_entries, filter_id)
         if not found:
             console.print(f"\n  [red]✗ No watchlist entry for:[/red] {filter_id}")
             sys.exit(1)
-        entries = [found[1]]
+        to_check = [found[1]]
+    else:
+        to_check = all_entries
 
-    console.print(Rule(f"[bold white] Watchlist check — {len(entries)} series [/bold white]", style="cyan"))
+    console.print(Rule(f"[bold white] Watchlist check — {len(to_check)} series [/bold white]", style="cyan"))
 
     flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
     flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
@@ -703,7 +705,7 @@ async def run_watchlist_check(
         console.print("[green]✓ reachable[/green]")
 
         # Use max workers for shared client, but per-entry ctx controls batch parallelism
-        max_workers = max((e.hls_workers for e in entries), default=24)
+        max_workers = max((e.hls_workers for e in to_check), default=24)
         http = HttpClient(max_workers)
         await http.start()
         try:
@@ -712,9 +714,9 @@ async def run_watchlist_check(
             total_failed = 0
             per_entry_summary: list[dict[str, Any]] = []
 
-            for idx, entry in enumerate(entries, 1):
+            for idx, entry in enumerate(to_check, 1):
                 console.print(
-                    f"\n  [cyan][{idx}/{len(entries)}][/cyan] [bold]{entry.title}[/bold]"
+                    f"\n  [cyan][{idx}/{len(to_check)}][/cyan] [bold]{entry.title}[/bold]"
                     f" [dim]{entry.url}[/dim]",
                 )
                 # Need to update last_checked after each entry
@@ -731,7 +733,7 @@ async def run_watchlist_check(
                     )
                     # update last_checked even on failure
                     entry.last_checked = time.time()
-                    WatchlistManager.save(entries, path)
+                    WatchlistManager.save(all_entries, path)
                     total_failed += 1
                     continue
 
@@ -788,7 +790,7 @@ async def run_watchlist_check(
                             {"title": entry.title, "new": 0, "done": 0, "failed": 1, "error": "dead link"},
                         )
                         entry.last_checked = time.time()
-                        WatchlistManager.save(entries, path)
+                        WatchlistManager.save(all_entries, path)
                         total_failed += 1
                         continue
                     try:
@@ -809,7 +811,7 @@ async def run_watchlist_check(
                             entry.session = new_session
                             entry.host = new_host
                             entry.url = f"https://{new_host}/anime/{new_session}"
-                            WatchlistManager.save(entries, path)
+                            WatchlistManager.save(all_entries, path)
                             console.print(
                                 f"  [yellow]↻ Relinked '{entry.title}': "
                                 f"{old_session[:8]}… → {new_session[:8]}…[/yellow]",
@@ -846,7 +848,7 @@ async def run_watchlist_check(
                                 },
                             )
                             entry.last_checked = time.time()
-                            WatchlistManager.save(entries, path)
+                            WatchlistManager.save(all_entries, path)
                             total_failed += 1
                             continue
                         else:
@@ -862,7 +864,7 @@ async def run_watchlist_check(
                                 },
                             )
                             entry.last_checked = time.time()
-                            WatchlistManager.save(entries, path)
+                            WatchlistManager.save(all_entries, path)
                             total_failed += 1
                             continue
                     except Exception as exc:
@@ -877,7 +879,7 @@ async def run_watchlist_check(
                             {"title": entry.title, "new": 0, "done": 0, "failed": 1, "error": str(exc)},
                         )
                         entry.last_checked = time.time()
-                        WatchlistManager.save(entries, path)
+                        WatchlistManager.save(all_entries, path)
                         total_failed += 1
                         continue
                 # Update stored title if scan succeeded with valid (non-404) title
@@ -888,7 +890,7 @@ async def run_watchlist_check(
                     and entry.title != anime.title
                 ):
                     entry.title = anime.title
-                    WatchlistManager.save(entries, path)
+                    WatchlistManager.save(all_entries, path)
                 # Actually better to use get_variant logic per number
                 pending: list[Any] = []
                 skipped_deleted = 0
@@ -925,7 +927,7 @@ async def run_watchlist_check(
                     )
                     downloaded_set.clear()
                     entry.downloaded = []
-                    WatchlistManager.save(entries, path)
+                    WatchlistManager.save(all_entries, path)
                 # Temporary orchestrator just for _find_existing helper (no network)
                 tmp_orch = BatchOrchestrator(ctx_for_check, anime, http, solver)
 
@@ -958,7 +960,7 @@ async def run_watchlist_check(
                 # Persist backfilled history even when up-to-date
                 if downloaded_set != set(float(v) for v in (entry.downloaded or [])):
                     entry.downloaded = sorted(downloaded_set)
-                    WatchlistManager.save(entries, path)
+                    WatchlistManager.save(all_entries, path)
 
                 if not pending:
                     if skipped_deleted:
@@ -970,7 +972,7 @@ async def run_watchlist_check(
                         console.print(f"  [dim]Up to date — {len(unique_by_num)} episodes, 0 new[/dim]")
                     per_entry_summary.append({"title": entry.title, "new": 0, "done": 0, "failed": 0})
                     entry.last_checked = time.time()
-                    WatchlistManager.save(entries, path)
+                    WatchlistManager.save(all_entries, path)
                     continue
 
                 console.print(
@@ -1014,7 +1016,7 @@ async def run_watchlist_check(
                     # Persist history even if download failed partially (only successes counted)
                     if 'downloaded_set' in locals():
                         entry.downloaded = sorted(downloaded_set)
-                    WatchlistManager.save(entries, path)
+                    WatchlistManager.save(all_entries, path)
                     # Orphan cleanup per entry not needed here
 
             # Final summary
