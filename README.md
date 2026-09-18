@@ -314,6 +314,22 @@ pahebatcher check             # run again → still 0 new, same skip
   ```
 - Backfill: on first `check` with existing files, they are added to `downloaded` automatically, so old entries migrate without manual edit.
 
+**Dead links / UUID rotation (auto-migrate):**
+
+AnimePahe sometimes re-uploads the same title under a new UUID — the old `.../anime/<old-uuid>` then returns `Unknown Anime` / 0 episodes. `check` detects this (`title == Unknown` or `0 eps` while the entry has a real title or `downloaded` history) and tries to **auto-migrate**:
+
+- Searches `AnimePaheScanner.search` for the stored title (host-rotating `pw/com/org` as in `scanner.py:55`), exact normalized-title match (`watchlist.py:30`).
+- **Exactly one new session** → updates the entry in-place (`session`/`host`/`url` `watchlist.json`), preserves prefs + `downloaded`, prints `↻ Relinked 'Title': <old>… → <new>…`, rescans and continues. No history lost.
+- **0 or 2+ candidates** (e.g. S1/S2 same title) or placeholder title (`title == session`) → no auto-migration; `check` marks that entry failed and prints `Use: pahebatcher wl relink <id> <new-url>`.
+
+Manual fix (always works, even for ambiguous titles):
+
+```bash
+pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>   # also link/migrate/update-url
+# history preserved, next check verifies new link
+pahebatcher wl show 1   # shows new URL, still Downloaded: [1,2,3]
+```
+
 **Behavior vs normal download:**
 
 - Reuses `AnimePaheScanner`, `BatchOrchestrator`, `SegmentStore` — no new download logic.
@@ -405,11 +421,13 @@ pahebatcher [URL] [options]
 | `pahebatcher watchlist show <URL|#>` <br> `pahebatcher wl s 1` | Show details for one entry |
 | `pahebatcher watchlist remove <URL|#> [--yes]` <br> `pahebatcher wl rm 1` | Remove entry from watchlist |
 | `pahebatcher watchlist reset <URL|#>` <br> `pahebatcher wl rst 1` | Clear deleted-history so deleted episodes will be re-downloaded |
+| `pahebatcher watchlist relink <ID> <new-URL>` <br> `pahebatcher wl relink 1 <new-URL>` | Relink dead entry to new UUID (preserves history; also auto-migrates on `check` if title matches one candidate) |
 
 ### Watchlist specifics
 
-- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
+- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c`/`link` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
 - **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:30`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
+- **Dead links:** if an old `.../anime/<uuid>` dies (re-upload under new UUID, same title), `check` auto-migrates when `search` finds exactly one new session with the same normalized title, preserving `downloaded`. Otherwise prints `Use: pahebatcher wl relink <id> <new-url>` — manual `relink` always works and keeps history.
 - **State file:** `watchlist.json` (JSON list of entries with `downloaded: [1,2]`). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
 - **Make:** `make run ARGS="watchlist ..."` / `make run ARGS="wl c"` / `make run ARGS="check"` forward through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
 - **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` / `wl` / `check` work identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
