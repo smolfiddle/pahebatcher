@@ -31,6 +31,31 @@ def _normalize_title(t: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", t.lower())).strip()
 
 
+def _is_404_title(t: str) -> bool:
+    low = t.lower()
+    return "404" in low or "oops" in low or "not found" in low
+
+
+def _recover_title_from_cache(session: str, cache_dir: Path = Path("pahe_cache")) -> str | None:
+    """Try to recover real title for a session from scan cache (for corrupted 404 titles)."""
+    if not cache_dir.exists():
+        return None
+    # Find any cache ending with _<session>/_scan_cache.json
+    for p in cache_dir.glob(f"*_{session}/_scan_cache.json"):
+        try:
+            import json as _json
+
+            raw = _json.loads(p.read_text(encoding="utf-8"))
+            t = str(raw.get("title", "")).strip()
+            if t and t != "Unknown Anime" and not _is_404_title(t):
+                return t
+        except Exception:
+            continue
+    # Fallback: try downloads folder name inference (sanitized title)
+    # Look for output dirs that might contain the series (best effort)
+    return None
+
+
 @dataclass
 class WatchlistEntry:
     url: str
@@ -318,12 +343,25 @@ def cli_relink(
                     return 0
                 relinked = 0
                 for ent in entries:
-                    if ent.title == ent.session or ent.title == "Unknown Anime" or not ent.title.strip():
+                    search_title = ent.title
+                    if _is_404_title(search_title):
+                        recovered = _recover_title_from_cache(ent.session)
+                        if recovered:
+                            console.print(
+                                f"  [dim]Recovered title '{recovered}' for {ent.session[:8]}…[/dim]",
+                            )
+                            search_title = recovered
+                    if (
+                        search_title == ent.session
+                        or search_title == "Unknown Anime"
+                        or not search_title.strip()
+                        or _is_404_title(search_title)
+                    ):
                         continue
                     # Try search regardless; live entries will yield 0 new_sessions
-                    console.print(f"  [dim]Checking '{ent.title}'...[/dim]")
-                    candidates = await AnimePaheScanner.search(solver, ent.host, ent.title)
-                    norm_target = _normalize_title(ent.title)
+                    console.print(f"  [dim]Checking '{search_title}'...[/dim]")
+                    candidates = await AnimePaheScanner.search(solver, ent.host, search_title)
+                    norm_target = _normalize_title(search_title)
                     new_sessions: set[str] = set()
                     for res in candidates:
                         sess = str(res.get("session", ""))
@@ -334,12 +372,16 @@ def cli_relink(
                         new_session = next(iter(new_sessions))
                         new_host = AnimePaheScanner._current_host or ent.host
                         old = ent.session[:8]
+                        old_title = ent.title
                         ent.session = new_session
                         ent.host = new_host
                         ent.url = f"https://{new_host}/anime/{new_session}"
+                        # If title was corrupted, fix it to recovered search_title
+                        if _is_404_title(ent.title):
+                            ent.title = search_title
                         relinked += 1
                         console.print(
-                            f"  [green]✓ Relinked '{ent.title}'[/green] "
+                            f"  [green]✓ Relinked '{old_title}'[/green] "
                             f"{old}… → {new_session[:8]}…",
                         )
                 if relinked:
@@ -373,9 +415,20 @@ def cli_relink(
         sys.exit(1)
     idx, entry = found
 
-    # Auto mode: no new_url supplied → search by stored title
+    # Auto mode: no new_url supplied → search by stored title (try cache recovery for 404)
     if not new_url:
-        if entry.title == entry.session or entry.title == "Unknown Anime" or not entry.title.strip():
+        search_title = entry.title
+        if _is_404_title(search_title):
+            recovered = _recover_title_from_cache(entry.session)
+            if recovered:
+                console.print(f"  [dim]Recovered title '{recovered}' for {entry.session[:8]}…[/dim]")
+                search_title = recovered
+        if (
+            search_title == entry.session
+            or search_title == "Unknown Anime"
+            or not search_title.strip()
+            or _is_404_title(search_title)
+        ):
             console.print(
                 f"\n  [red]✗ Cannot auto-relink '{entry.title}' — title unknown.[/red]\n"
                 f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
@@ -398,9 +451,9 @@ def cli_relink(
                 if not await solver.ping():
                     console.print("[red]✗ FlareSolverr not responding[/red]")
                     return None
-                console.print(f"  [dim]Searching for '{entry.title}'...[/dim]")
-                candidates = await AnimePaheScanner.search(solver, entry.host, entry.title)
-                norm_target = _normalize_title(entry.title)
+                console.print(f"  [dim]Searching for '{search_title}'...[/dim]")
+                candidates = await AnimePaheScanner.search(solver, entry.host, search_title)
+                norm_target = _normalize_title(search_title)
                 new_sessions: set[str] = set()
                 for res in candidates:
                     sess = str(res.get("session", ""))
@@ -413,13 +466,13 @@ def cli_relink(
                     return new_host, new_session
                 if len(new_sessions) == 0:
                     console.print(
-                        f"  [yellow]✗ No new session found for '{entry.title}'.[/yellow]\n"
+                        f"  [yellow]✗ No new session found for '{search_title}'.[/yellow]\n"
                         f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
                     )
                 else:
                     console.print(
                         f"  [yellow]✗ {len(new_sessions)} candidates for "
-                        f"'{entry.title}' — ambiguous.[/yellow]\n"
+                        f"'{search_title}' — ambiguous.[/yellow]\n"
                         f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
                     )
                 return None
@@ -468,6 +521,24 @@ def cli_relink(
     entry.session = new_session
     entry.host = new_host
     entry.url = f"https://{new_host}/anime/{new_session}"
+    # If old title was corrupted, fix it from recovered search_title or cache
+    if _is_404_title(old_title):
+        fixed = None
+        search_val = locals().get("search_title")
+        if (
+            isinstance(search_val, str)
+            and search_val
+            and not _is_404_title(search_val)
+            and search_val != old_session
+        ):
+            fixed = search_val
+        else:
+            fixed = _recover_title_from_cache(old_session)
+            if fixed and _is_404_title(fixed):
+                fixed = None
+        if fixed:
+            entry.title = fixed
+            console.print(f"  [dim]Fixed title '{fixed}'[/dim]")
     # If old title was placeholder, keep new title placeholder to be refreshed on next check
     # Otherwise keep old title until next successful scan refreshes it
     WatchlistManager.save(entries, path)
@@ -655,10 +726,6 @@ async def run_watchlist_check(
                     total_failed += 1
                     continue
 
-                # Update title if it was placeholder or changed
-                if anime.title and anime.title != "Unknown Anime":
-                    entry.title = anime.title
-
                 # Deduplicate to unique episode numbers, prefer requested audio
                 # Mirrors prompts.noninteractive_episodes and downloader resolver logic
                 unique_by_num: dict[float, Any] = {}
@@ -671,16 +738,39 @@ async def run_watchlist_check(
                         if existing.audio != entry.audio_lang and ep.audio == entry.audio_lang:
                             unique_by_num[ep.number] = ep
                 # Dead-link auto-migrate: same title now at new UUID (e.g. site re-upload)
+                # Use entry.title before overwriting, and treat 404 titles as dead
+                anime_is_dead = (
+                    anime.title == "Unknown Anime"
+                    or _is_404_title(anime.title)
+                    or len(unique_by_num) == 0
+                )
                 is_dead_candidate = (
-                    (anime.title == "Unknown Anime" or len(unique_by_num) == 0)
+                    anime_is_dead
                     and (
-                        (entry.title != entry.session and entry.title != "Unknown Anime")
+                        (
+                            entry.title != entry.session
+                            and entry.title != "Unknown Anime"
+                            and not _is_404_title(entry.title)
+                        )
                         or bool(entry.downloaded)
                     )
                 )
                 if is_dead_candidate:
-                    # Placeholder titles can't be searched
-                    if entry.title == entry.session or entry.title == "Unknown Anime":
+                    # Try to recover corrupted title from cache
+                    search_title = entry.title
+                    if _is_404_title(search_title):
+                        recovered = _recover_title_from_cache(entry.session, cache_dir)
+                        if recovered:
+                            console.print(
+                                f"  [dim]Recovered title '{recovered}' for {entry.session[:8]}…[/dim]",
+                            )
+                            search_title = recovered
+                    # Placeholder or still corrupted can't be searched
+                    if (
+                        search_title == entry.session
+                        or search_title == "Unknown Anime"
+                        or _is_404_title(search_title)
+                    ):
                         console.print(
                             f"  [yellow]✗ Link dead for '{entry.title}' — title unknown.[/yellow]\n"
                             f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
@@ -693,8 +783,8 @@ async def run_watchlist_check(
                         total_failed += 1
                         continue
                     try:
-                        candidates = await AnimePaheScanner.search(solver, entry.host, entry.title)
-                        norm_target = _normalize_title(entry.title)
+                        candidates = await AnimePaheScanner.search(solver, entry.host, search_title)
+                        norm_target = _normalize_title(search_title)
                         new_sessions: set[str] = set()
                         for res in candidates:
                             sess = str(res.get("session", ""))
@@ -781,11 +871,26 @@ async def run_watchlist_check(
                         WatchlistManager.save(entries, path)
                         total_failed += 1
                         continue
+                # Update stored title if scan succeeded with valid (non-404) title
+                if (
+                    anime.title
+                    and anime.title != "Unknown Anime"
+                    and not _is_404_title(anime.title)
+                    and entry.title != anime.title
+                ):
+                    entry.title = anime.title
+                    WatchlistManager.save(entries, path)
                 # Actually better to use get_variant logic per number
                 pending: list[Any] = []
                 skipped_deleted = 0
-                # For _find_existing we need ctx output_dir with sanitized title appended
-                safe_title = sanitize(anime.title)
+                # For _find_existing we need ctx output_dir with sanitized title
+                # Use entry.title when anime is dead to keep folder stable
+                is_anime_dead = (
+                    anime.title == "Unknown Anime" or _is_404_title(anime.title)
+                )
+                safe_title = sanitize(
+                    entry.title if is_anime_dead else anime.title,
+                )
                 full_output = os.path.join(entry.output_dir, safe_title)
                 ctx_for_check = AppContext(
                     output_dir=full_output,
