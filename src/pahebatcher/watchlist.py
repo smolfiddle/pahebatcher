@@ -388,10 +388,19 @@ def cli_relink(
                     WatchlistManager.save(entries, path)
                     console.print(f"\n  [green]✓ Relinked {relinked} entry(s)[/green]")
                 else:
-                    console.print(
-                        "\n  [dim]No entries needed relinking (or ambiguous). "
-                        "Use: pahebatcher wl relink <id> <new-url>[/dim]",
+                    # Distinguish healthy vs ambiguous dead
+                    has_dead = any(
+                        _is_404_title(e.title) or e.title == "Unknown Anime" for e in entries
                     )
+                    if has_dead:
+                        console.print(
+                            "\n  [dim]No entries relinked (ambiguous or title unknown). "
+                            "Use: pahebatcher wl relink <id> <new-url>[/dim]",
+                        )
+                    else:
+                        console.print(
+                            f"\n  [green]✓ All {len(entries)} entries are live — no relinking needed[/green]",
+                        )
                 return relinked
             finally:
                 await solver.close()
