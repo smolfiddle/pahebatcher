@@ -287,7 +287,7 @@ def cli_reset(identifier: str, path: Path | None = None) -> None:
     console.print(f"  [green]✓ Reset[/green] '{entry.title}' [dim](cleared {cleared} history)[/dim]")
 
 
-def cli_relink(identifier: str, new_url: str, path: Path | None = None) -> None:
+def cli_relink(identifier: str, new_url: str | None = None, path: Path | None = None) -> None:
     from pahebatcher.ui.console import console
 
     entries = WatchlistManager.load(path)
@@ -296,11 +296,82 @@ def cli_relink(identifier: str, new_url: str, path: Path | None = None) -> None:
         console.print(f"\n  [red]✗ No entry found for:[/red] {identifier}")
         sys.exit(1)
     idx, entry = found
-    try:
-        new_host, new_session = parse_anime_url(new_url)
-    except ValueError as exc:
-        console.print(f"\n  [red]✗ Invalid new URL:[/red] {exc}")
-        sys.exit(1)
+
+    # Auto mode: no new_url supplied → search by stored title
+    if not new_url:
+        if entry.title == entry.session or entry.title == "Unknown Anime" or not entry.title.strip():
+            console.print(
+                f"\n  [red]✗ Cannot auto-relink '{entry.title}' — title unknown.[/red]\n"
+                f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
+            )
+            sys.exit(1)
+        # Run async auto-search
+        import asyncio
+
+        from pahebatcher.solver import Solver
+
+        async def _auto() -> tuple[str, str] | None:
+            cm = ConfigManager()
+            cm.load()
+            cookie_string = str(cm.get("cookie_string"))
+            flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+            flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
+            solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+            await solver.start()
+            try:
+                if not await solver.ping():
+                    console.print("[red]✗ FlareSolverr not responding[/red]")
+                    return None
+                console.print(f"  [dim]Searching for '{entry.title}'...[/dim]")
+                candidates = await AnimePaheScanner.search(solver, entry.host, entry.title)
+                norm_target = _normalize_title(entry.title)
+                new_sessions: set[str] = set()
+                for res in candidates:
+                    sess = str(res.get("session", ""))
+                    t = str(res.get("title", ""))
+                    if sess and sess != entry.session and _normalize_title(t) == norm_target:
+                        new_sessions.add(sess)
+                if len(new_sessions) == 1:
+                    new_session = next(iter(new_sessions))
+                    new_host = AnimePaheScanner._current_host or entry.host
+                    return new_host, new_session
+                if len(new_sessions) == 0:
+                    console.print(
+                        f"  [yellow]✗ No new session found for '{entry.title}'.[/yellow]\n"
+                        f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
+                    )
+                else:
+                    console.print(
+                        f"  [yellow]✗ {len(new_sessions)} candidates for "
+                        f"'{entry.title}' — ambiguous.[/yellow]\n"
+                        f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
+                    )
+                return None
+            finally:
+                await solver.close()
+
+        # Handle being called from already-running loop (e.g. tests)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result = pool.submit(asyncio.run, _auto()).result()
+        else:
+            result = asyncio.run(_auto())
+        if not result:
+            sys.exit(1)
+        new_host, new_session = result
+        console.print(f"  [dim]Auto-found: {new_session} on {new_host}[/dim]")
+    else:
+        try:
+            new_host, new_session = parse_anime_url(new_url)
+        except ValueError as exc:
+            console.print(f"\n  [red]✗ Invalid new URL:[/red] {exc}")
+            sys.exit(1)
     if new_session == entry.session:
         console.print(f"\n  [yellow]Already linked to that session:[/yellow] {new_session}")
         return
@@ -315,6 +386,9 @@ def cli_relink(identifier: str, new_url: str, path: Path | None = None) -> None:
     old_session, old_url = entry.session, entry.url
     old_title = entry.title
     # Preserve history and prefs, update session/host/url, keep title if placeholder
+    # new_host already set in auto case, else from parsed URL
+    # Ensure new_host is defined (for manual case, it's from parsed)
+    # For auto case, new_host/new_session already set
     entry.session = new_session
     entry.host = new_host
     entry.url = f"https://{new_host}/anime/{new_session}"

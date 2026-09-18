@@ -185,10 +185,13 @@ def build_watchlist_parser() -> argparse.ArgumentParser:
 
     p_relink = sub.add_parser(
         "relink", aliases=["link", "migrate", "update-url"],
-        help="Relink entry to new URL (preserves history)",
+        help="Relink entry to new URL (preserves history) — auto if no URL given",
     )
     p_relink.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
-    p_relink.add_argument("new_url", help="New AnimePahe series URL")
+    p_relink.add_argument(
+        "new_url", nargs="?", default=None,
+        help="New AnimePahe series URL (omit to auto-find by title)",
+    )
 
     p_check = sub.add_parser(
         "check", aliases=["c", "sync", "update"],
