@@ -256,8 +256,10 @@ pahebatcher wl show 1       # s/info also work: wl s 1
 pahebatcher wl show https://animepahe.pw/anime/<uuid>
 pahebatcher wl remove 1 --yes   # also rm/r/del
 pahebatcher wl reset 1      # also rst/clear — clear deleted-history
-pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>  # fix dead link, keep history
+pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>  # fix one dead link
 pahebatcher wl relink 1     # auto — finds new UUID by title (no URL needed)
+pahebatcher wl relink       # one command — auto-relinks ALL dead entries
+pahebatcher wl relink       # one command — auto-relinks ALL dead entries
 
 # Check for new episodes and download (one-shot, cron-friendly)
 pahebatcher watchlist check
@@ -329,6 +331,7 @@ Manual or **auto relink** (always works, even for ambiguous titles):
 ```bash
 pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>   # also link/migrate/update-url
 pahebatcher wl relink 1     # auto — finds new UUID by title, no URL needed
+pahebatcher wl relink       # one command — auto-relinks ALL dead entries at once
 # history preserved, next check verifies new link
 pahebatcher wl show 1   # shows new URL, still Downloaded: [1,2,3]
 ```
@@ -424,14 +427,13 @@ pahebatcher [URL] [options]
 | `pahebatcher watchlist show <URL|#>` <br> `pahebatcher wl s 1` | Show details for one entry |
 | `pahebatcher watchlist remove <URL|#> [--yes]` <br> `pahebatcher wl rm 1` | Remove entry from watchlist |
 | `pahebatcher watchlist reset <URL|#>` <br> `pahebatcher wl rst 1` | Clear deleted-history so deleted episodes will be re-downloaded |
-| `pahebatcher watchlist relink <ID> [new-URL]` <br> `pahebatcher wl relink 1` (auto) / `wl link 1 <url>` | Relink dead entry to new UUID by title (preserves history) |
-| `pahebatcher watchlist relink <ID> <new-URL>` <br> `pahebatcher wl relink 1 <new-URL>` | Relink dead entry to new UUID (preserves history; also auto-migrates on `check` if title matches one candidate) |
+| `pahebatcher watchlist relink [ID] [new-URL]` <br> `pahebatcher wl relink` (all) / `wl relink 1` (auto) / `wl relink 1 <url>` | Relink dead entry(s) to new UUID by title (preserves history; `check` also auto-migrates) |
 
 ### Watchlist specifics
 
 - **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c`/`link` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
 - **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:30`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
-- **Dead links:** if an old `.../anime/<uuid>` dies (re-upload under new UUID, same title), `check` auto-migrates when `search` finds exactly one new session with the same normalized title, preserving `downloaded`. Otherwise prints `Use: pahebatcher wl relink <id> <new-url>` — manual `relink` always works and keeps history.
+- **Dead links:** if an old `.../anime/<uuid>` dies (re-upload under new UUID, same title), `check` auto-migrates when `search` finds exactly one new session with the same normalized title, preserving `downloaded`. Otherwise prints `Use: pahebatcher wl relink <id> <new-url>` — `relink` without args (`wl relink` / `pahebatcher relink`) auto-fixes ALL dead entries in one command; with `<id>` auto-finds by title, with `<new-url>` manual.
 - **State file:** `watchlist.json` (JSON list of entries with `downloaded: [1,2]`). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
 - **Make:** `make run ARGS="watchlist ..."` / `make run ARGS="wl c"` / `make run ARGS="check"` forward through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
 - **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` / `wl` / `check` work identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.

@@ -287,10 +287,86 @@ def cli_reset(identifier: str, path: Path | None = None) -> None:
     console.print(f"  [green]✓ Reset[/green] '{entry.title}' [dim](cleared {cleared} history)[/dim]")
 
 
-def cli_relink(identifier: str, new_url: str | None = None, path: Path | None = None) -> None:
+def cli_relink(
+    identifier: str | None = None, new_url: str | None = None, path: Path | None = None
+) -> None:
     from pahebatcher.ui.console import console
 
     entries = WatchlistManager.load(path)
+    # No identifier → auto-relink ALL dead entries in one command
+    if not identifier:
+        if not entries:
+            console.print("\n  [dim]No watchlist entries.[/dim]")
+            return
+        # Reuse check's dead-detection: Unknown/0 + real title/history
+        # But for relink we just try auto for every entry with real title
+        import asyncio
+
+        from pahebatcher.solver import Solver
+
+        async def _relink_all() -> int:
+            cm = ConfigManager()
+            cm.load()
+            cookie_string = str(cm.get("cookie_string"))
+            flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+            flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
+            solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+            await solver.start()
+            try:
+                if not await solver.ping():
+                    console.print("[red]✗ FlareSolverr not responding[/red]")
+                    return 0
+                relinked = 0
+                for ent in entries:
+                    if ent.title == ent.session or ent.title == "Unknown Anime" or not ent.title.strip():
+                        continue
+                    # Try search regardless; live entries will yield 0 new_sessions
+                    console.print(f"  [dim]Checking '{ent.title}'...[/dim]")
+                    candidates = await AnimePaheScanner.search(solver, ent.host, ent.title)
+                    norm_target = _normalize_title(ent.title)
+                    new_sessions: set[str] = set()
+                    for res in candidates:
+                        sess = str(res.get("session", ""))
+                        t = str(res.get("title", ""))
+                        if sess and sess != ent.session and _normalize_title(t) == norm_target:
+                            new_sessions.add(sess)
+                    if len(new_sessions) == 1:
+                        new_session = next(iter(new_sessions))
+                        new_host = AnimePaheScanner._current_host or ent.host
+                        old = ent.session[:8]
+                        ent.session = new_session
+                        ent.host = new_host
+                        ent.url = f"https://{new_host}/anime/{new_session}"
+                        relinked += 1
+                        console.print(
+                            f"  [green]✓ Relinked '{ent.title}'[/green] "
+                            f"{old}… → {new_session[:8]}…",
+                        )
+                if relinked:
+                    WatchlistManager.save(entries, path)
+                    console.print(f"\n  [green]✓ Relinked {relinked} entry(s)[/green]")
+                else:
+                    console.print(
+                        "\n  [dim]No entries needed relinking (or ambiguous). "
+                        "Use: pahebatcher wl relink <id> <new-url>[/dim]",
+                    )
+                return relinked
+            finally:
+                await solver.close()
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                pool.submit(asyncio.run, _relink_all()).result()
+        else:
+            asyncio.run(_relink_all())
+        return
+
     found = WatchlistManager.find_entry(entries, identifier)
     if not found:
         console.print(f"\n  [red]✗ No entry found for:[/red] {identifier}")
