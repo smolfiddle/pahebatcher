@@ -128,9 +128,11 @@ def build_watchlist_parser() -> argparse.ArgumentParser:
             "  pahebatcher watchlist list  |  pahebatcher wl list  |  pahebatcher wl ls\n"
             "  pahebatcher watchlist check |  pahebatcher check   |  pahebatcher wl c\n"
             "  pahebatcher watchlist remove https://animepahe.pw/anime/<uuid>\n"
+            "  pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>  # fix dead link\n"
             "\n"
             "Shorthand: wl, w, watch = watchlist; check/sync = watchlist check\n"
-            "Sub-aliases: a=add, ls/l=list, s=show, rm/r/del=remove, rst=reset, c/sync=check\n"
+            "Sub-aliases: a=add, ls/l=list, s=show, rm/r/del=remove,\n"
+            "             rst=reset, c/sync=check, link/migrate=relink\n"
             "\n"
             "Cron example (run hourly):\n"
             "  0 * * * * cd /path/to/pahebatcher && venv/bin/python -m pahebatcher \\\n"
@@ -180,6 +182,13 @@ def build_watchlist_parser() -> argparse.ArgumentParser:
         help="Clear skip history for an entry (re-download deleted)",
     )
     p_reset.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
+
+    p_relink = sub.add_parser(
+        "relink", aliases=["link", "migrate", "update-url"],
+        help="Relink entry to new URL (preserves history)",
+    )
+    p_relink.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
+    p_relink.add_argument("new_url", help="New AnimePahe series URL")
 
     p_check = sub.add_parser(
         "check", aliases=["c", "sync", "update"],
@@ -506,6 +515,10 @@ def main() -> None:
                     from pahebatcher.watchlist import cli_reset
 
                     cli_reset(wl_args.identifier)
+                elif act in ("relink", "link", "migrate", "update-url"):
+                    from pahebatcher.watchlist import cli_relink
+
+                    cli_relink(wl_args.identifier, wl_args.new_url)
                 elif act in ("check", "c", "sync", "update"):
                     from pahebatcher.watchlist import run_watchlist_check
 

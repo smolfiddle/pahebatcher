@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -24,6 +25,10 @@ def get_watchlist_path(path: Path | None = None) -> Path:
     if env:
         return Path(env)
     return DEFAULT_WATCHLIST_PATH
+
+
+def _normalize_title(t: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", t.lower())).strip()
 
 
 @dataclass
@@ -282,6 +287,47 @@ def cli_reset(identifier: str, path: Path | None = None) -> None:
     console.print(f"  [green]✓ Reset[/green] '{entry.title}' [dim](cleared {cleared} history)[/dim]")
 
 
+def cli_relink(identifier: str, new_url: str, path: Path | None = None) -> None:
+    from pahebatcher.ui.console import console
+
+    entries = WatchlistManager.load(path)
+    found = WatchlistManager.find_entry(entries, identifier)
+    if not found:
+        console.print(f"\n  [red]✗ No entry found for:[/red] {identifier}")
+        sys.exit(1)
+    idx, entry = found
+    try:
+        new_host, new_session = parse_anime_url(new_url)
+    except ValueError as exc:
+        console.print(f"\n  [red]✗ Invalid new URL:[/red] {exc}")
+        sys.exit(1)
+    if new_session == entry.session:
+        console.print(f"\n  [yellow]Already linked to that session:[/yellow] {new_session}")
+        return
+    # Check if new session already exists as separate entry
+    for i, e in enumerate(entries):
+        if i != idx and e.session == new_session:
+            console.print(
+                f"\n  [red]✗ New session already in watchlist as #{i+1} '{e.title}'[/red]\n"
+                f"  [dim]Remove it first or merge manually.[/dim]",
+            )
+            sys.exit(1)
+    old_session, old_url = entry.session, entry.url
+    old_title = entry.title
+    # Preserve history and prefs, update session/host/url, keep title if placeholder
+    entry.session = new_session
+    entry.host = new_host
+    entry.url = f"https://{new_host}/anime/{new_session}"
+    # If old title was placeholder, keep new title placeholder to be refreshed on next check
+    # Otherwise keep old title until next successful scan refreshes it
+    WatchlistManager.save(entries, path)
+    console.print(
+        f"  [green]✓ Relinked '{old_title}'[/green] [dim]{old_session[:8]}… → {new_session[:8]}…[/dim]\n"
+        f"    {old_url} → [cyan]{entry.url}[/cyan]\n"
+        f"  [dim]History ({len(entry.downloaded)} eps) preserved. Run check to verify.[/dim]",
+    )
+
+
 def cli_add(url: str, quality: int | None, audio_lang: str | None, output: str | None,
             parallel: int | None, workers: int | None, keep_temp: bool, retry: int | None,
             path: Path | None = None) -> None:
@@ -474,6 +520,117 @@ async def run_watchlist_check(
                         existing = unique_by_num[ep.number]
                         if existing.audio != entry.audio_lang and ep.audio == entry.audio_lang:
                             unique_by_num[ep.number] = ep
+                # Dead-link auto-migrate: same title now at new UUID (e.g. site re-upload)
+                is_dead_candidate = (
+                    (anime.title == "Unknown Anime" or len(unique_by_num) == 0)
+                    and (
+                        (entry.title != entry.session and entry.title != "Unknown Anime")
+                        or bool(entry.downloaded)
+                    )
+                )
+                if is_dead_candidate:
+                    # Placeholder titles can't be searched
+                    if entry.title == entry.session or entry.title == "Unknown Anime":
+                        console.print(
+                            f"  [yellow]✗ Link dead for '{entry.title}' — title unknown.[/yellow]\n"
+                            f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
+                        )
+                        per_entry_summary.append(
+                            {"title": entry.title, "new": 0, "done": 0, "failed": 1, "error": "dead link"},
+                        )
+                        entry.last_checked = time.time()
+                        WatchlistManager.save(entries, path)
+                        total_failed += 1
+                        continue
+                    try:
+                        candidates = await AnimePaheScanner.search(solver, entry.host, entry.title)
+                        norm_target = _normalize_title(entry.title)
+                        new_sessions: set[str] = set()
+                        for res in candidates:
+                            sess = str(res.get("session", ""))
+                            t = str(res.get("title", ""))
+                            if sess and sess != entry.session and _normalize_title(t) == norm_target:
+                                new_sessions.add(sess)
+                        if len(new_sessions) == 1:
+                            new_session = next(iter(new_sessions))
+                            old_session = entry.session
+                            old_url = entry.url
+                            # Preserve history, update linkage, use host that succeeded for search
+                            new_host = AnimePaheScanner._current_host or entry.host
+                            entry.session = new_session
+                            entry.host = new_host
+                            entry.url = f"https://{new_host}/anime/{new_session}"
+                            WatchlistManager.save(entries, path)
+                            console.print(
+                                f"  [yellow]↻ Relinked '{entry.title}': "
+                                f"{old_session[:8]}… → {new_session[:8]}…[/yellow]",
+                            )
+                            # Re-scan with new session
+                            scanner2 = AnimePaheScanner(solver, entry.host, entry.session)
+                            anime2 = await scanner2.scan(
+                                cache_dir, prefer_audio=entry.audio_lang, cache_ttl=cache_ttl_watch,
+                            )
+                            if anime2.title != "Unknown Anime" and anime2.episodes:
+                                anime = anime2
+                                if anime.title and anime.title != "Unknown Anime":
+                                    entry.title = anime.title
+                                # Recompute unique_by_num from migrated anime
+                                unique_by_num = {}
+                                for ep in anime.episodes:
+                                    if ep.number not in unique_by_num:
+                                        unique_by_num[ep.number] = ep
+                                    else:
+                                        ex = unique_by_num[ep.number]
+                                        if ex.audio != entry.audio_lang and ep.audio == entry.audio_lang:
+                                            unique_by_num[ep.number] = ep
+                            else:
+                                raise RuntimeError("migrated session still dead")
+                        elif len(new_sessions) == 0:
+                            console.print(
+                                f"  [yellow]✗ Link dead for '{entry.title}' — no session found.[/yellow]\n"
+                                f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
+                            )
+                            per_entry_summary.append(
+                                {
+                                    "title": entry.title,
+                                    "new": 0, "done": 0, "failed": 1, "error": "dead link",
+                                },
+                            )
+                            entry.last_checked = time.time()
+                            WatchlistManager.save(entries, path)
+                            total_failed += 1
+                            continue
+                        else:
+                            console.print(
+                                f"  [yellow]✗ Link dead for '{entry.title}' — "
+                                f"{len(new_sessions)} candidates, not auto-migrating.[/yellow]\n"
+                                f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
+                            )
+                            per_entry_summary.append(
+                                {
+                                    "title": entry.title,
+                                    "new": 0, "done": 0, "failed": 1, "error": "ambiguous",
+                                },
+                            )
+                            entry.last_checked = time.time()
+                            WatchlistManager.save(entries, path)
+                            total_failed += 1
+                            continue
+                    except Exception as exc:
+                        # If we already handled and continued, not here; otherwise treat as dead
+                        if "dead link" not in str(exc).lower() and "ambiguous" not in str(exc).lower():
+                            console.print(
+                                f"  [yellow]✗ Link dead for '{entry.title}' — "
+                                f"auto-migrate failed: {exc}[/yellow]\n"
+                                f"  [dim]Use: pahebatcher wl relink {entry.session[:8]} <new-url>[/dim]",
+                            )
+                        per_entry_summary.append(
+                            {"title": entry.title, "new": 0, "done": 0, "failed": 1, "error": str(exc)},
+                        )
+                        entry.last_checked = time.time()
+                        WatchlistManager.save(entries, path)
+                        total_failed += 1
+                        continue
                 # Actually better to use get_variant logic per number
                 pending: list[Any] = []
                 skipped_deleted = 0
