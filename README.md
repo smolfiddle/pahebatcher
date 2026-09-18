@@ -250,12 +250,14 @@ pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn 
 pahebatcher wl add https://animepahe.pw/anime/<uuid> --audio eng -q 720 -j 2 -w 24 --keep-temp --retry 2  # wl/w = shorthand
 pahebatcher w add https://animepahe.pw/anime/<uuid>          # uses pahebatcher.toml defaults
 
-# List / inspect / remove / reset ( --yes skips confirmation for scripts)
+# List / inspect / remove / reset / relink ( --yes skips confirmation)
 pahebatcher watchlist list  # or wl list, wl ls, wl l
 pahebatcher wl show 1       # s/info also work: wl s 1
 pahebatcher wl show https://animepahe.pw/anime/<uuid>
 pahebatcher wl remove 1 --yes   # also rm/r/del
-pahebatcher wl reset 1      # also rst/clear — clear deleted-history (re-download deleted)
+pahebatcher wl reset 1      # also rst/clear — clear deleted-history
+pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>  # fix dead link, keep history
+pahebatcher wl relink 1     # auto — finds new UUID by title (no URL needed)
 
 # Check for new episodes and download (one-shot, cron-friendly)
 pahebatcher watchlist check
@@ -322,10 +324,11 @@ AnimePahe sometimes re-uploads the same title under a new UUID — the old `.../
 - **Exactly one new session** → updates the entry in-place (`session`/`host`/`url` `watchlist.json`), preserves prefs + `downloaded`, prints `↻ Relinked 'Title': <old>… → <new>…`, rescans and continues. No history lost.
 - **0 or 2+ candidates** (e.g. S1/S2 same title) or placeholder title (`title == session`) → no auto-migration; `check` marks that entry failed and prints `Use: pahebatcher wl relink <id> <new-url>`.
 
-Manual fix (always works, even for ambiguous titles):
+Manual or **auto relink** (always works, even for ambiguous titles):
 
 ```bash
 pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>   # also link/migrate/update-url
+pahebatcher wl relink 1     # auto — finds new UUID by title, no URL needed
 # history preserved, next check verifies new link
 pahebatcher wl show 1   # shows new URL, still Downloaded: [1,2,3]
 ```
@@ -421,6 +424,7 @@ pahebatcher [URL] [options]
 | `pahebatcher watchlist show <URL|#>` <br> `pahebatcher wl s 1` | Show details for one entry |
 | `pahebatcher watchlist remove <URL|#> [--yes]` <br> `pahebatcher wl rm 1` | Remove entry from watchlist |
 | `pahebatcher watchlist reset <URL|#>` <br> `pahebatcher wl rst 1` | Clear deleted-history so deleted episodes will be re-downloaded |
+| `pahebatcher watchlist relink <ID> [new-URL]` <br> `pahebatcher wl relink 1` (auto) / `wl link 1 <url>` | Relink dead entry to new UUID by title (preserves history) |
 | `pahebatcher watchlist relink <ID> <new-URL>` <br> `pahebatcher wl relink 1 <new-URL>` | Relink dead entry to new UUID (preserves history; also auto-migrates on `check` if title matches one candidate) |
 
 ### Watchlist specifics
