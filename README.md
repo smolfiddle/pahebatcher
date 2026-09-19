@@ -317,7 +317,7 @@ pahebatcher check             # run again → still 0 new, same skip
   pahebatcher wl check   # → 1 new (Ep 3) redownloaded
   ```
 - Backfill: on first `check` with existing files, they are added to `downloaded` automatically, so old entries migrate without manual edit.
-- One-time rebuild: if `downloaded` was empty (e.g., right after `relink` before any `check`), missing files are seen as new and will be redownloaded **once** to rebuild history (your 38). After that, future single-file deletes are `skipped (deleted)` as above.
+- One-time rebuild: if `downloaded` was empty (e.g., right after `relink` before any `check`), missing files are seen as new and will be redownloaded **once** to rebuild history. After that, future single-file deletes are `skipped (deleted)` as above.
 
 **Dead links / UUID rotation (auto-migrate):**
 
