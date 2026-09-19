@@ -355,15 +355,18 @@ pahebatcher check             # run again → still 0 new, same skip
 - Backfill: on first `check` with existing files, they are added to `downloaded` automatically, so old entries migrate without manual edit.
 - One-time rebuild: if `downloaded` was empty (e.g., right after `relink` before any `check`), missing files are seen as new and will be redownloaded **once** to rebuild history. After that, future single-file deletes are `skipped (deleted)` as above.
 
-**Dead links / UUID rotation (auto-migrate):**
+**Dead links / UUID rotation (auto-migrate — shared helper):**
 
-AnimePahe sometimes re-uploads the same title under a new UUID — the old `.../anime/<old-uuid>` then returns `Unknown Anime` / 0 episodes. `check` detects this (`title == Unknown` or `0 eps` while the entry has a real title or `downloaded` history) and tries to **auto-migrate**:
+AnimePahe sometimes re-uploads the same title under a new UUID — the old `.../anime/<old-uuid>` then returns `Unknown Anime` / `Oops... 404` / `0 eps`. `check` and `relink` now delegate to the **same** helper (`_find_single_new_session` / `_relink_entry_via_search` `watchlist.py:39`) — `AnimePaheScanner.search` host-rotating `pw/com/org` (`scanner.py:55`) + exact `_normalize_title` match + `_recover_title_from_cache` for `Oops...` — so they never disagree, and `0` vs `2+` vs `unknown_title` are surfaced distinctly:
 
-- Searches `AnimePaheScanner.search` for the stored title (host-rotating `pw/com/org` as in `scanner.py:55`), exact normalized-title match (`watchlist.py:30`).
-- **Exactly one new session** → updates the entry in-place (`session`/`host`/`url` `watchlist.json`), preserves prefs + `downloaded`, prints `↻ Relinked 'Title': <old>… → <new>…`, rescans and continues. No history lost.
-- **0 or 2+ candidates** (e.g. S1/S2 same title) or placeholder title (`title == session`) → no auto-migration; `check` marks that entry failed and prints `Use: pahebatcher wl relink <id> <new-url>`.
+- **Exactly one new session** → updates `watchlist.json` in-place (`session`/`host`/`url`), preserves prefs + `downloaded`, prints `↻ Relinked 'Title': <old>… → <new>…`, rescans and continues.
+- **0 candidates** → `✗ No new session found for 'Title'.` + `Use: pahebatcher wl relink <id> <new-url>`
+- **2+ candidates** (e.g. S1/S2 same title) → `✗ Multiple candidates — ambiguous.` + same hint
+- **Placeholder / `Oops...` with no cache** → `✗ Cannot auto-relink — title unknown.` + same hint
 
-Manual or **auto relink** (always works, even for ambiguous titles):
+`check` auto-migrates per-entry and continues; `relink` does the same search but without downloading — both share the helper.
+
+Manual or **auto relink** (one command):
 
 ```bash
 pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>   # also link/migrate/update-url
@@ -470,7 +473,7 @@ pahebatcher [URL] [options]
 
 - **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c`/`link` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
 - **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:30`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
-- **Dead links:** if an old `.../anime/<uuid>` dies (re-upload under new UUID, same title), `check` auto-migrates when `search` finds exactly one new session with the same normalized title, preserving `downloaded`. Otherwise prints `Use: pahebatcher wl relink <id> <new-url>` — `relink` without args (`wl relink` / `pahebatcher relink`) auto-fixes ALL dead entries in one command; with `<id>` auto-finds by title, with `<new-url>` manual.
+- **Dead links (shared helper):** `check` and `relink` delegate to the same `_find_single_new_session` / `_relink_entry_via_search` (`watchlist.py:39`) — `search` + `_normalize_title` + `_recover_title_from_cache` — so they never disagree. Exactly one match → `↻ Relinked`; `0` → `No new session found`; `2+` → `Multiple candidates — ambiguous`; placeholder/`Oops...` → `title unknown` — each prints `Use: pahebatcher wl relink <id> <new-url>`. `wl relink` (no args) fixes all dead in one command.
 - **State file:** `watchlist.json` (JSON list of entries with `downloaded: [1,2]`). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
 - **Make:** `make run ARGS="watchlist ..."` / `make run ARGS="wl c"` / `make run ARGS="check"` forward through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
 - **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` / `wl` / `check` work identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
@@ -538,12 +541,14 @@ pahe_cache/
 - **Resume**: on restart, `done_indices()` reads existing segment IDs. Only missing segments are fetched. Completed MP4 files are skipped entirely.
 - **Orphan cleanup**: cache directories older than 24 hours without active downloads are removed on exit.
 
-### Watchlist Check Pipeline
+### Watchlist Check Pipeline (shared helper)
 
 ```
 watchlist.json (downloaded: [1,2]) ──► for each entry:
   if not Path(output_dir/sanitize(title)).exists(): downloaded=[] (folder-deleted reset)
   AnimePaheScanner.scan(cache_ttl=0) ──► unique episodes by number (prefer audio) ──►
+  if dead (Unknown/404/0) → _find_single_new_session (search + _normalize_title + cache recovery)
+    ok (1) → relink in-place + rescan; none/ambiguous/unknown → mark failed distinctly
   BatchOrchestrator._find_existing() + downloaded history
     on_disk ? backfill history : (in history && folder_exists ? skip deleted : pending)
   ──► BatchOrchestrator.download(pending) (same 2-stage, SegmentStore resume)
@@ -551,7 +556,7 @@ watchlist.json (downloaded: [1,2]) ──► for each entry:
   ──► summary table (New/Done/Failed; skipped (deleted) in dim)
 ```
 
-Shared `Solver`/`HttpClient` (max `hls_workers` across entries). Failures are per-entry isolated.
+`check` and `relink` delegate to the same `_find_single_new_session` helper, so `0` (`No new session found`), `2+` (`Multiple candidates`), and `unknown_title` are never conflated. Shared `Solver`/`HttpClient` (max `hls_workers` across entries). Failures are per-entry isolated.
 
 ### Kwik to M3U8 Resolution Chain
 
