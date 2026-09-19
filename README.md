@@ -129,6 +129,42 @@ pahebatcher
 # no --force needed: edits to src/ are live; only reinstall if pyproject.toml changes
 ```
 
+### Option D: Windows (native — not tested by developer)
+
+> **Note:** The developer has never tested pahebatcher on actual Windows. The Python code is OS-neutral (`pathlib`/`asyncio`, `store.py:40` atomic `.tmp→.ts`, `pyproject.toml:8` `Operating System :: OS Independent`), but Windows has only been reasoned about, not run. WSL2 is the safer bet if you hit edge cases.
+
+**Prerequisites (Windows):**
+
+| Requirement | Install (Windows) |
+|---|---|
+| **Python 3.11+** | `winget install Python.Python.3.12` or https://www.python.org/downloads/ — check `py -3.11 --version` |
+| **FlareSolverr** | Docker Desktop: `docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr` — keep `http://localhost:8191/v1` (or set `FLARESOLVERR_URL`) |
+| **FFmpeg** | `winget install Gyan.FFmpeg` or https://ffmpeg.org/download.html — ensure `ffmpeg -version` is on `PATH` |
+| **MPV (stream only)** | `winget install mpv.net` or https://mpv.io/install/ — ensure `mpv --version` is on `PATH` |
+
+**Install & run:**
+
+```powershell
+git clone https://github.com/smolfiddle/pahebatcher.git
+cd pahebatcher
+py -3.11 -m venv venv
+venv\Scripts\python -m pip install -e ".[dev]"
+venv\Scripts\python -m pahebatcher --help
+venv\Scripts\python -m pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 720
+venv\Scripts\python -m pahebatcher wl check
+# pipx alternative (same isolated-venv caveat as Linux):
+# pipx install .
+# pahebatcher --help | findstr watchlist
+```
+
+**Windows differences:**
+
+- No `make` — use `venv\Scripts\python -m pahebatcher ...` directly (`Makefile:42` is Unix-only).
+- No `cron` — use Task Scheduler: Create Task → Trigger daily/hourly → Action `Start a program` → Program `C:\path\to\pahebatcher\venv\Scripts\python.exe` → Arguments `-m pahebatcher wl check` → Start in `C:\path\to\pahebatcher` (so `watchlist.json`/`pahe_cache` resolve, `WATCHLIST_PATH` also works).
+- Paths use `.\` and `venv\Scripts\` on Windows vs `venv/bin/` on Linux/macOS.
+
+If you hit Windows-specific issues (long paths, `sanitize` reserved names, console encoding), please open an issue mentioning Windows.
+
 All three methods produce the `pahebatcher` command. You can also run via `python -m pahebatcher`.
 
 > **Which binary am I running?**
