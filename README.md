@@ -2,7 +2,7 @@
 
 Terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
-![Version](https://img.shields.io/badge/version-3.4.0-blue)
+![Version](https://img.shields.io/badge/version-3.5.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -250,12 +250,16 @@ pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn 
 pahebatcher wl add https://animepahe.pw/anime/<uuid> --audio eng -q 720 -j 2 -w 24 --keep-temp --retry 2  # wl/w = shorthand
 pahebatcher w add https://animepahe.pw/anime/<uuid>          # uses pahebatcher.toml defaults
 
-# List / inspect / remove / reset ( --yes skips confirmation for scripts)
+# List / inspect / remove / reset / relink ( --yes skips confirmation)
 pahebatcher watchlist list  # or wl list, wl ls, wl l
 pahebatcher wl show 1       # s/info also work: wl s 1
 pahebatcher wl show https://animepahe.pw/anime/<uuid>
 pahebatcher wl remove 1 --yes   # also rm/r/del
-pahebatcher wl reset 1      # also rst/clear — clear deleted-history (re-download deleted)
+pahebatcher wl reset 1      # also rst/clear — clear deleted-history
+pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>  # fix one dead link
+pahebatcher wl relink 1     # auto — finds new UUID by title (no URL needed)
+pahebatcher wl relink       # one command — auto-relinks ALL dead entries
+pahebatcher wl relink       # one command — auto-relinks ALL dead entries
 
 # Check for new episodes and download (one-shot, cron-friendly)
 pahebatcher watchlist check
@@ -313,6 +317,25 @@ pahebatcher check             # run again → still 0 new, same skip
   pahebatcher wl check   # → 1 new (Ep 3) redownloaded
   ```
 - Backfill: on first `check` with existing files, they are added to `downloaded` automatically, so old entries migrate without manual edit.
+- One-time rebuild: if `downloaded` was empty (e.g., right after `relink` before any `check`), missing files are seen as new and will be redownloaded **once** to rebuild history. After that, future single-file deletes are `skipped (deleted)` as above.
+
+**Dead links / UUID rotation (auto-migrate):**
+
+AnimePahe sometimes re-uploads the same title under a new UUID — the old `.../anime/<old-uuid>` then returns `Unknown Anime` / 0 episodes. `check` detects this (`title == Unknown` or `0 eps` while the entry has a real title or `downloaded` history) and tries to **auto-migrate**:
+
+- Searches `AnimePaheScanner.search` for the stored title (host-rotating `pw/com/org` as in `scanner.py:55`), exact normalized-title match (`watchlist.py:30`).
+- **Exactly one new session** → updates the entry in-place (`session`/`host`/`url` `watchlist.json`), preserves prefs + `downloaded`, prints `↻ Relinked 'Title': <old>… → <new>…`, rescans and continues. No history lost.
+- **0 or 2+ candidates** (e.g. S1/S2 same title) or placeholder title (`title == session`) → no auto-migration; `check` marks that entry failed and prints `Use: pahebatcher wl relink <id> <new-url>`.
+
+Manual or **auto relink** (always works, even for ambiguous titles):
+
+```bash
+pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>   # also link/migrate/update-url
+pahebatcher wl relink 1     # auto — finds new UUID by title, no URL needed
+pahebatcher wl relink       # one command — auto-relinks ALL dead entries at once
+# history preserved, next check verifies new link
+pahebatcher wl show 1   # shows new URL, still Downloaded: [1,2,3]
+```
 
 **Behavior vs normal download:**
 
@@ -405,11 +428,13 @@ pahebatcher [URL] [options]
 | `pahebatcher watchlist show <URL|#>` <br> `pahebatcher wl s 1` | Show details for one entry |
 | `pahebatcher watchlist remove <URL|#> [--yes]` <br> `pahebatcher wl rm 1` | Remove entry from watchlist |
 | `pahebatcher watchlist reset <URL|#>` <br> `pahebatcher wl rst 1` | Clear deleted-history so deleted episodes will be re-downloaded |
+| `pahebatcher watchlist relink [ID] [new-URL]` <br> `pahebatcher wl relink` (all) / `wl relink 1` (auto) / `wl relink 1 <url>` | Relink dead entry(s) to new UUID by title (preserves history; `check` also auto-migrates) |
 
 ### Watchlist specifics
 
-- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
+- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c`/`link` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
 - **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:30`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
+- **Dead links:** if an old `.../anime/<uuid>` dies (re-upload under new UUID, same title), `check` auto-migrates when `search` finds exactly one new session with the same normalized title, preserving `downloaded`. Otherwise prints `Use: pahebatcher wl relink <id> <new-url>` — `relink` without args (`wl relink` / `pahebatcher relink`) auto-fixes ALL dead entries in one command; with `<id>` auto-finds by title, with `<new-url>` manual.
 - **State file:** `watchlist.json` (JSON list of entries with `downloaded: [1,2]`). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
 - **Make:** `make run ARGS="watchlist ..."` / `make run ARGS="wl c"` / `make run ARGS="check"` forward through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
 - **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` / `wl` / `check` work identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
@@ -619,7 +644,7 @@ pytest:     195 passed
 coverage:   52% (1941 stmts, 938 missed — scrapers/downloader/stream require network/mocks)
 loc:        3025 src, 1879 tests
 density:    6.44 tests / 100 LOC
-version:    3.3.0 coherent across pyproject.toml / config.py / __init__.py
+version:    3.5.0 coherent across pyproject.toml / config.py / __init__.py
 ```
 
 Shared AES cache, atomic segment writes, and glob-stable scan cache are covered by the extended tests.
@@ -646,7 +671,7 @@ Shared AES cache, atomic segment writes, and glob-stable scan cache are covered 
 | `watchlist check` downloads nothing after move | Output files moved / renamed | `_find_existing` matches `Ep 001`/`Ep_001` prefix only (`downloader.py:154`); rename back or re-add entry |
 | `watchlist add` updates instead of duplicates | Same `session` UUID | Intentional dedupe (`watchlist.py:134`); use `watchlist list` to see, `remove` first if you need a clean add |
 | `watchlist` output in `/tmp` warns `volatile tmpfs` | `output_dir` `/tmp` is `tmpfs` cleared on reboot | Use persistent `./downloads` (default) or `~/anime`; otherwise `watchlist` folder-gone reset will redownload after reboot (`watchlist.py:305`) |
-| `pahebatcher: error: unrecognized arguments: check` | Global `pahebatcher` stale (pipx 3.0.0) vs `venv` 3.3.0 with `watchlist` (`main.py:414`) | `make run` uses `venv` and works; for global use `venv/bin/pahebatcher watchlist check`, `venv/bin/python -m pahebatcher watchlist check`, or `make watchlist-check`, or refresh pipx: `pipx install . --force && hash -r` |
+| `pahebatcher: error: unrecognized arguments: check` | Global `pahebatcher` stale (pipx <3.5.0) vs `venv` 3.5.0 with `watchlist` (`main.py:414`) | `make run` uses `venv` and works; for global use `venv/bin/pahebatcher watchlist check`, `venv/bin/python -m pahebatcher watchlist check`, or `make watchlist-check`, or refresh pipx: `pipx install . --force && hash -r` |
 
 ---
 
