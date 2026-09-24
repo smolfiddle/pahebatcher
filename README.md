@@ -737,6 +737,10 @@ Areas open to contribution:
 
 ---
 
+## Credits
+
+- **WSL one-command setup** (`setup-wsl.sh` + `Makefile` Docker lifecycle, `venv` fallback) — idea and initial implementation by [/u/HellHarbinger](https://www.reddit.com/user/HellHarbinger/) on Reddit (vibecoded with Gemini, refined and hardened by maintainer). Thank you!
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for full text.

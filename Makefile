@@ -1,3 +1,4 @@
+# WSL one-command setup idea + initial Makefile_HellHar/setup-wsl.sh by u/HellHarbinger on Reddit
 VENV := venv
 PYTHON := $(VENV)/bin/python
 FLARESOLVERR_IMAGE := ghcr.io/flaresolverr/flaresolverr:3.3.21

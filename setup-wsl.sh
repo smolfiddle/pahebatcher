@@ -1,6 +1,7 @@
 #!/bin/bash
 # System provisioning script for Ubuntu/WSL — WSL + native Linux (Ubuntu/Debian/Mint)
 # Idempotent: safe to re-run. Requires sudo for apt/usermod/wsl.conf.
+# Original idea + initial Makefile/setup-wsl.sh by u/HellHarbinger on Reddit (https://www.reddit.com/user/HellHarbinger/) — vibecoded with Gemini, refined by maintainer.
 
 set -euo pipefail
 
