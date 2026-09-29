@@ -2,7 +2,7 @@
 
 Terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
-![Version](https://img.shields.io/badge/version-3.6.0-blue)
+![Version](https://img.shields.io/badge/version-3.6.1-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -78,7 +78,7 @@ make help         # show all targets
 make config-show  # display current settings
 make watchlist-list  # list watchlist
 make watchlist-check # check watchlist for new episodes
-make test         # run all 195 tests
+make test         # run all 203 tests
 make lint         # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark    # full coherence benchmark
@@ -571,7 +571,7 @@ watchlist.json (downloaded: [1,2]) ──► for each entry:
 
 ### Muxing
 
-FFmpeg concat demuxer: `ffmpeg -f concat -safe 0 -i concat.txt -c copy -movflags +faststart out.mp4`. Falls back to pipe mode (`cat segments | ffmpeg -i pipe:0`) if concat demuxer fails on malformed TS.
+Contiguous pipe first (`cat segments | ffmpeg -i pipe:0 -c copy -movflags +faststart out.mp4`), since the concat demuxer derives boundaries from per-file durations and can stretch the timeline with timestamp gaps. Falls back to concat demuxer (`ffmpeg -f concat -safe 0 -i concat.txt`) if the pipe path fails. After muxing, a mislabeled AAC Main `esds` (`0b88`, actually HE-AAC payload) is corrected to AAC-LC (`1388`, metadata byte only, no re-encode) so strict decoders (Android `MediaCodec`) accept the file — VLC/mpv played it either way.
 
 ### Retry Policy
 
@@ -617,7 +617,7 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 195 tests
+make test        # run all 203 tests
 make lint        # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark   # full coherence benchmark: tests + lint + typecheck + coverage
@@ -628,7 +628,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 195 tests, asyncio auto-mode
+pytest tests/ -v              # 203 tests, asyncio auto-mode
 pytest tests/ --cov=pahebatcher --cov-report=term  # with coverage
 ruff check src/               # ALL rule select, target py311, 0 errors
 mypy src/                     # strict mode, full type coverage, 0 errors
@@ -681,11 +681,11 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 ```
 ruff:       0 errors
 mypy:       0 errors
-pytest:     195 passed
+pytest:     203 passed
 coverage:   52% (1941 stmts, 938 missed — scrapers/downloader/stream require network/mocks)
 loc:        3025 src, 1879 tests
 density:    6.44 tests / 100 LOC
-version:    3.6.0 coherent across pyproject.toml / config.py / __init__.py
+version:    3.6.1 coherent across pyproject.toml / config.py / __init__.py
 ```
 
 Shared AES cache, atomic segment writes, and glob-stable scan cache are covered by the extended tests.
@@ -712,7 +712,7 @@ Shared AES cache, atomic segment writes, and glob-stable scan cache are covered 
 | `watchlist check` downloads nothing after move | Output files moved / renamed | `_find_existing` matches `Ep 001`/`Ep_001` prefix only (`downloader.py:154`); rename back or re-add entry |
 | `watchlist add` updates instead of duplicates | Same `session` UUID | Intentional dedupe (`watchlist.py:134`); use `watchlist list` to see, `remove` first if you need a clean add |
 | `watchlist` output in `/tmp` warns `volatile tmpfs` | `output_dir` `/tmp` is `tmpfs` cleared on reboot | Use persistent `./downloads` (default) or `~/anime`; otherwise `watchlist` folder-gone reset will redownload after reboot (`watchlist.py:305`) |
-| `pahebatcher: error: unrecognized arguments: check` | Global `pahebatcher` stale (pipx <3.6.0) vs `venv` 3.6.0 with `watchlist` (`main.py:414`) | `make run` uses `venv` and works; for global use `venv/bin/pahebatcher watchlist check`, `venv/bin/python -m pahebatcher watchlist check`, or `make watchlist-check`, or refresh pipx: `pipx install . --force && hash -r` |
+| `pahebatcher: error: unrecognized arguments: check` | Global `pahebatcher` stale (pipx <3.6.1) vs `venv` 3.6.1 with `watchlist` (`main.py:414`) | `make run` uses `venv` and works; for global use `venv/bin/pahebatcher watchlist check`, `venv/bin/python -m pahebatcher watchlist check`, or `make watchlist-check`, or refresh pipx: `pipx install . --force && hash -r` |
 
 ---
 
