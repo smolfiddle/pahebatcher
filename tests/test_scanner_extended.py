@@ -108,3 +108,69 @@ class TestScanCacheStable:
                     anime = await scanner.scan(tmp_path, cache_ttl=60)
                     assert anime.title == "Unknown Anime"
                     assert anime.episodes == []
+
+
+def _ep_page(episodes: list[dict[str, object]], last_page: int = 1) -> dict[str, object]:
+    return {"data": episodes, "last_page": last_page}
+
+
+def _ep_item(num: int, sess: str = "s1") -> dict[str, object]:
+    return {"episode": num, "session": sess, "title": "T", "fansub": "F", "audio": "jpn"}
+
+
+class TestScanPaginationResilience:
+    async def test_page_retry_then_success(self, tmp_path: Path) -> None:
+        solver = MagicMock()
+        scanner = AnimePaheScanner(solver, "animepahe.com", "sess")
+        page_ok = _ep_page([_ep_item(1)], last_page=1)
+        with patch.object(AnimePaheScanner, "discover_all_sessions", new_callable=AsyncMock, return_value=["sess"]):
+            with patch.object(scanner, "_fetch_title", new_callable=AsyncMock, return_value="Anime"):
+                with patch.object(
+                    AnimePaheScanner, "_fetch_page", new_callable=AsyncMock,
+                    side_effect=[None, page_ok],
+                ) as mock_fetch:
+                    anime = await scanner.scan(tmp_path, cache_ttl=60)
+                    assert len(anime.episodes) == 1
+                    assert mock_fetch.await_count == 2
+                    # Successful scan is cached
+                    assert list(tmp_path.rglob("_scan_cache.json")) != []
+
+    async def test_mid_pagination_failure_not_cached(self, tmp_path: Path) -> None:
+        solver = MagicMock()
+        scanner = AnimePaheScanner(solver, "animepahe.com", "sess")
+        page1 = _ep_page([_ep_item(1)], last_page=2)
+        with patch.object(AnimePaheScanner, "discover_all_sessions", new_callable=AsyncMock, return_value=["sess"]):
+            with patch.object(scanner, "_fetch_title", new_callable=AsyncMock, return_value="Anime"):
+                with patch.object(
+                    AnimePaheScanner, "_fetch_page", new_callable=AsyncMock,
+                    side_effect=[page1, None, None, None],
+                ):
+                    anime = await scanner.scan(tmp_path, cache_ttl=60)
+                    # Episodes before the failed page are kept, but nothing is cached
+                    assert len(anime.episodes) == 1
+                    assert list(tmp_path.rglob("_scan_cache.json")) == []
+
+    async def test_empty_data_page_breaks_cleanly_and_caches(self, tmp_path: Path) -> None:
+        solver = MagicMock()
+        scanner = AnimePaheScanner(solver, "animepahe.com", "sess")
+        with patch.object(AnimePaheScanner, "discover_all_sessions", new_callable=AsyncMock, return_value=["sess"]):
+            with patch.object(scanner, "_fetch_title", new_callable=AsyncMock, return_value="Anime"):
+                with patch.object(
+                    AnimePaheScanner, "_fetch_page", new_callable=AsyncMock,
+                    return_value={"data": [], "last_page": 1},
+                ):
+                    anime = await scanner.scan(tmp_path, cache_ttl=60)
+                    assert anime.episodes == []
+                    assert list(tmp_path.rglob("_scan_cache.json")) != []
+
+    async def test_page1_failure_not_cached(self, tmp_path: Path) -> None:
+        solver = MagicMock()
+        scanner = AnimePaheScanner(solver, "animepahe.com", "sess")
+        with patch.object(AnimePaheScanner, "discover_all_sessions", new_callable=AsyncMock, return_value=["sess"]):
+            with patch.object(scanner, "_fetch_title", new_callable=AsyncMock, return_value="Anime"):
+                with patch.object(
+                    AnimePaheScanner, "_fetch_page", new_callable=AsyncMock, return_value=None,
+                ):
+                    anime = await scanner.scan(tmp_path, cache_ttl=60)
+                    assert anime.episodes == []
+                    assert list(tmp_path.rglob("_scan_cache.json")) == []

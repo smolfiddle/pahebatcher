@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_PAGE_FETCH_ATTEMPTS = 3  # per-page fetch attempts before giving up (solver retries internally too)
+
 _UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I,
 )
@@ -247,13 +249,35 @@ class AnimePaheScanner:
         anime.has_session = session_path.exists()
 
         unique_episodes: dict[tuple[float, str], EpisodeInfo] = {}
+        completed_all = True
         for s in all_sessions:
             console.print(f"  [dim]Scanning session {s} ...[/dim]", end="\r")
             sub_scanner = AnimePaheScanner(self.solver, self.host, s)
             page = 1
             while True:
-                data = await sub_scanner._fetch_page(page)
-                if not data or not data.get("data"):
+                # Retry transport failures (None); a valid-but-empty page
+                # means the session genuinely has no releases — don't retry that.
+                data: dict[str, Any] | None = None
+                for attempt in range(_PAGE_FETCH_ATTEMPTS):
+                    data = await sub_scanner._fetch_page(page)
+                    if data is not None:
+                        break
+                    if attempt < _PAGE_FETCH_ATTEMPTS - 1:
+                        await asyncio.sleep(REQUEST_DELAY * (2**attempt))
+                if data is None:
+                    # Episodes past this page are missing — never silently
+                    # truncate (e.g. long series cut at 270 after one hiccup).
+                    completed_all = False
+                    log.warning(
+                        "Scan page %d failed for session %s after %d attempts",
+                        page, s, _PAGE_FETCH_ATTEMPTS,
+                    )
+                    console.print(
+                        f"\n  [yellow]\u26a0 Page {page} failed for session {s} — "
+                        f"episodes past this page are missing.[/yellow]",
+                    )
+                    break
+                if not data.get("data"):
                     break
                 for ep in self._parse_episode_page(data, self.host, s):
                     key = (ep.number, ep.audio)
@@ -268,8 +292,13 @@ class AnimePaheScanner:
         anime.total = len({e.number for e in anime.episodes})
         console.print(" " * 60, end="\r")
 
-        # Save cache
-        cache_path = self._cache_path(cache_dir, self.session, title)
-        self._save_cache(cache_path, anime)
+        if completed_all:
+            cache_path = self._cache_path(cache_dir, self.session, title)
+            self._save_cache(cache_path, anime)
+        else:
+            console.print(
+                f"\n  [yellow]\u26a0 Scan incomplete — {len(unique_episodes)} episodes collected.[/yellow]"
+                f"\n  [dim]Partial results were NOT cached. Re-run to retry.[/dim]\n",
+            )
 
         return anime
