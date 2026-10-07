@@ -1,8 +1,10 @@
 # WSL one-command setup idea + initial Makefile_HellHar/setup-wsl.sh by u/HellHarbinger on Reddit
 VENV := venv
 PYTHON := $(VENV)/bin/python
-FLARESOLVERR_IMAGE := ghcr.io/flaresolverr/flaresolverr:3.3.21
-# To bump FlareSolverr after testing: update tag above (see https://github.com/FlareSolverr/FlareSolverr/releases)
+FLARESOLVERR_IMAGE := ghcr.io/flaresolverr/flaresolverr:v3.3.21
+# Upstream tags carry a `v` prefix (v3.3.21, not 3.3.21). Pinned (not :latest)
+# so fresh installs don't silently drift; bump after testing new releases:
+# https://github.com/FlareSolverr/FlareSolverr/releases (thanks u/HellHarbinger for catching the missing `v`)
 
 .PHONY: help install run config-show watchlist-list watchlist-check test lint typecheck benchmark clean docker-daemon docker-up docker-down
 
