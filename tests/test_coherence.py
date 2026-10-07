@@ -33,7 +33,7 @@ class TestBenchmark:
         import pahebatcher
         import pahebatcher.models
         import pahebatcher.utils
-        assert pahebatcher.__version__ == "3.6.2"
+        assert pahebatcher.__version__ == "3.6.3"
 
 
 class TestDocsCoherence:
