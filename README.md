@@ -1,5 +1,9 @@
 # pahebatcher
 
+<p align="center">
+  <img src="assets/logo/pahebatcher.svg" alt="pahebatcher logo by u/HellHarbinger" width="360">
+</p>
+
 Terminal tool for batch-downloading and streaming anime from [AnimePahe](https://animepahe.pw). Features a parallel HLS engine with segment-level crash recovery, Rich-powered live dashboard, and MPV streaming with mid-playback SUB/DUB switching.
 
 ![Version](https://img.shields.io/badge/version-3.6.3-blue)
@@ -740,6 +744,7 @@ Areas open to contribution:
 ## Credits
 
 - **WSL one-command setup** (`setup-wsl.sh` + `Makefile` Docker lifecycle, `venv` fallback) — idea and initial implementation by [/u/HellHarbinger](https://www.reddit.com/user/HellHarbinger/) on Reddit (vibecoded with Gemini, refined and hardened by maintainer). Thank you!
+- **Logo** (`assets/logo/pahebatcher.svg`, CLI banner gradient) — designed by [/u/HellHarbinger](https://www.reddit.com/user/HellHarbinger/); checked-in copy is his SVG with only the full-bleed black background rect removed for transparency.
 
 ## License
 
