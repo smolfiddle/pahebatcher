@@ -254,7 +254,7 @@ async def run_stream(
     idx = 0
 
     console.print()
-    console.print(Rule("[bold white] Streaming via MPV [/bold white]", style="cyan"))
+    console.print(Rule("[bold white] Streaming via MPV [/bold white]", style="brand"))
 
     def render_play_panel(
         ep: EpisodeInfo, state: str = "playing", choices_ui: str = "",
@@ -266,33 +266,33 @@ async def run_stream(
         if has_alt:
             alt_name = "DUB" if other_lang == "eng" else "SUB"
             audio_str += (
-                f"  [dim]([cyan]{alt_name} available \u2014 press [bold]A[/bold] to switch[/cyan])[/dim]"
+                f"  [dim]([brand]{alt_name} available \u2014 press [bold]A[/bold] to switch[/brand])[/dim]"
             )
 
         ep_title = _display_title(ep)
         if state == "playing":
             content = Group(
-                Text(anime.title, style="bold cyan underline"),
+                Text(anime.title, style="brand.bold underline"),
                 Text.from_markup(
-                    f"\u25b6  Ep [cyan]{ep.ep_str}[/cyan]  [bold white]{ep_title}[/bold white]",
+                    f"\u25b6  Ep [brand]{ep.ep_str}[/brand]  [bold white]{ep_title}[/bold white]",
                     style="bold green",
                 ),
                 Text.from_markup(
                     f"   Audio: {audio_str}  \u00b7  Quality: {ctx.quality}p", style="dim",
                 ),
                 Text.from_markup(
-                    f"   Episode [cyan]{idx + 1}[/cyan] of [cyan]{len(playlist)}[/cyan]", style="dim",
+                    f"   Episode [brand]{idx + 1}[/brand] of [brand]{len(playlist)}[/brand]", style="dim",
                 ),
                 Rule(style="dim", characters="\u2500"),
                 Text("Close MPV window to return to controls", style="italic dim"),
             )
-            title_p = "[bold cyan]\u25b6  Live Playback[/bold cyan]"
+            title_p = "[brand.bold]\u25b6  Live Playback[/brand.bold]"
             border_c = "green"
         else:
             content = Group(
-                Text(anime.title, style="bold cyan underline"),
+                Text(anime.title, style="brand.bold underline"),
                 Text.from_markup(
-                    f"\u25a0  Ep [cyan]{ep.ep_str}[/cyan]  [dim]{ep_title}[/dim]  {audio_str}",
+                    f"\u25a0  Ep [brand]{ep.ep_str}[/brand]  [dim]{ep_title}[/dim]  {audio_str}",
                     style="dim",
                 ),
                 Rule(style="dim", characters="\u2500"),
@@ -320,7 +320,7 @@ async def run_stream(
                     SpinnerColumn(),
                     TextColumn(
                         f"[bold white]({idx + 1}/{len(playlist)})"
-                        f"  Resolving Ep [cyan]{ep.ep_str}[/cyan]"
+                        f"  Resolving Ep [brand]{ep.ep_str}[/brand]"
                         f"  {_audio_pill(audio_pref)}\u2026"
                     ),
                     console=console, transient=True,
@@ -409,7 +409,7 @@ async def run_stream(
                     if idx > 0:
                         valid_choices.insert(0, "p")
                         prompt_parts.append("[bold](P)[/bold]rev")
-                        ui_options.append("[cyan]P[/cyan]rev")
+                        ui_options.append("[brand]P[/brand]rev")
                     if idx < len(playlist) - 1:
                         valid_choices.insert(0, "n")
                         prompt_parts.append("[bold](N)[/bold]ext")
@@ -421,7 +421,7 @@ async def run_stream(
                     alt_name = "DUB" if other_lang == "eng" else "SUB"
                     ui_options.append(f"[yellow]A[/yellow]udio\u2192{alt_name}")
 
-                    ui_options += ["[white]R[/white]eplay", "[magenta]S[/magenta]elect", "[red]Q[/red]uit"]
+                    ui_options += ["[white]R[/white]eplay", "[accent]S[/accent]elect", "[red]Q[/red]uit"]
                     prompt_parts += ["[bold](R)[/bold]eplay", "[bold](S)[/bold]elect", "[bold](Q)[/bold]uit"]
 
                     choices_ui = "  \u00b7  ".join(ui_options)
@@ -430,7 +430,7 @@ async def run_stream(
                 default = "n" if idx < len(playlist) - 1 else "q"
                 all_choices = valid_choices + [c.upper() for c in valid_choices]
                 choice = Prompt.ask(
-                    "  [cyan]" + "  ".join(prompt_parts) + "[/cyan]",
+                    "  [brand]" + "  ".join(prompt_parts) + "[/brand]",
                     choices=all_choices, default=default, show_choices=False,
                 ).lower()
 
@@ -451,7 +451,7 @@ async def run_stream(
                 elif choice == "s":
                     console.print()
                     sel = Table(
-                        box=box.ROUNDED, header_style="bold cyan",
+                        box=box.ROUNDED, header_style="brand.bold",
                         title=f"[bold white]Select Episode \u2014 {anime.title}[/bold white]",
                     )
                     sel.add_column("#", justify="right", style="dim", width=4)
@@ -463,14 +463,14 @@ async def run_stream(
                         sel.add_row(f"{pointer}{i + 1}", e.ep_str, _display_title(e), style=style_s)
                     console.print(sel)
                     num = IntPrompt.ask(
-                        f"  [cyan]Jump to # (1\u2013{len(playlist)})[/cyan]", default=idx + 1,
+                        f"  [brand]Jump to # (1\u2013{len(playlist)})[/brand]", default=idx + 1,
                     )
                     idx = max(0, min(num - 1, len(playlist) - 1))
             except KeyboardInterrupt:
                 break
             except Exception as exc:
                 console.print(f"  [red]\u2717 Error:[/red] {exc}")
-                if not Confirm.ask("  [cyan]Try next episode?[/cyan]", default=True):
+                if not Confirm.ask("  [brand]Try next episode?[/brand]", default=True):
                     break
             finally:
                 if local_runner is not None:

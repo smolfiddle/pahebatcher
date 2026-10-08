@@ -7,8 +7,9 @@ from rich.panel import Panel
 from rich.text import Text
 
 from pahebatcher.config import VERSION
+from pahebatcher.ui.theme import THEME
 
-console = Console()
+console = Console(theme=THEME)
 
 _BANNER_LINES = [
     r" ____       _            ____        _       _",
@@ -21,10 +22,10 @@ _BANNER_LINES = [
 # AnimePahe pink gradient (logo by u/HellHarbinger, see assets/logo/pahebatcher.svg):
 # hot pink up top fading to white at the bottom.
 _BANNER_STYLES = [
-    "bold #ff3f90",
-    "bold #fb6cab",
-    "bold #f9a8cd",
-    "bold #fbdcef",
+    "brand.bold",
+    "accent.bold",
+    "soft.bold",
+    "pale.bold",
     "bold white",
 ]
 
@@ -36,5 +37,5 @@ def print_banner() -> None:
     banner.append(f"  v{VERSION}  \u00b7  AnimePahe Batch Downloader\n", style="dim")
     console.print(Panel(
         Align.center(banner),
-        border_style="#ff3f90", box=box.DOUBLE, padding=(0, 2),
+        border_style="brand", box=box.DOUBLE, padding=(0, 2),
     ))

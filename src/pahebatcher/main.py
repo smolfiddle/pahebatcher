@@ -232,7 +232,7 @@ async def run(args: argparse.Namespace) -> None:
     cache_dir = Path("pahe_cache")
 
     # Prerequisites check
-    console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="cyan"))
+    console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="brand"))
     console.print(f"  [dim]FlareSolverr:[/dim] {flaresolverr_url}  ", end="")
 
     solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
@@ -270,12 +270,12 @@ async def run(args: argparse.Namespace) -> None:
             badge = " [bold yellow][PARTIAL DOWNLOAD FOUND][/bold yellow]" if anime.has_session else ""
             console.print(
                 f"  [green]\u2713[/green] [bold]{anime.title}[/bold]{badge}\n"
-                f"  \u2014 [cyan]{len(anime.episodes)}[/cyan] episodes  "
+                f"  \u2014 [brand]{len(anime.episodes)}[/brand] episodes  "
                 f"({compact_ep_range(anime.episodes)})"
             )
 
             if args.list_only:
-                t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
+                t = Table(box=box.SIMPLE, show_header=True, header_style="brand.bold")
                 t.add_column("Ep", width=6, justify="right")
                 t.add_column("Title", style="white")
                 t.add_column("Audio", width=5)
@@ -293,31 +293,31 @@ async def run(args: argparse.Namespace) -> None:
                     mode = "stream" if args.stream else "download"
                 else:
                     console.print()
-                    console.print(Rule("[bold white] Action [/bold white]", style="cyan"))
+                    console.print(Rule("[bold white] Action [/bold white]", style="brand"))
                     sessions = SessionManager.get_sessions(cache_dir)
                     total_cache = sum(s["size"] for s in sessions)
                     cache_hint = f" [dim]({fmt_bytes(total_cache)})[/dim]" if total_cache > 0 else ""
 
                     console.print(Panel(
-                        "  [bold white]1[/bold white]  [cyan]Download[/cyan]"
+                        "  [bold white]1[/bold white]  [brand]Download[/brand]"
                         "  [dim]\u00b7 save .mp4 files[/dim]\n"
-                        "  [bold white]2[/bold white]  [cyan]Stream[/cyan]"
+                        "  [bold white]2[/bold white]  [brand]Stream[/brand]"
                         "    [dim]\u00b7 play in MPV[/dim]\n"
-                        f"  [bold white]3[/bold white]  [cyan]Sessions & Cache[/cyan]{cache_hint}\n"
-                        "  [bold white]4[/bold white]  [cyan]List[/cyan]"
+                        f"  [bold white]3[/bold white]  [brand]Sessions & Cache[/brand]{cache_hint}\n"
+                        "  [bold white]4[/bold white]  [brand]List[/brand]"
                         "      [dim]\u00b7 show episode table[/dim]\n"
                         "  [bold white]5[/bold white]  [red]Exit[/red]",
-                        title=f"[bold cyan]{anime.title}[/bold cyan]",
-                        border_style="cyan", box=box.ROUNDED, padding=(0, 2),
+                        title=f"[brand.bold]{anime.title}[/brand.bold]",
+                        border_style="brand", box=box.ROUNDED, padding=(0, 2),
                     ))
                     choice = Prompt.ask(
-                        "  [cyan]Select action[/cyan]",
+                        "  [brand]Select action[/brand]",
                         choices=["1", "2", "3", "4", "5"], default="1", show_choices=False,
                     )
                     if choice == "5":
                         break
                     if choice == "4":
-                        t = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
+                        t = Table(box=box.SIMPLE, show_header=True, header_style="brand.bold")
                         t.add_column("Ep", width=6, justify="right")
                         t.add_column("Title", style="white")
                         t.add_column("Audio", width=5)
@@ -340,7 +340,7 @@ async def run(args: argparse.Namespace) -> None:
                     chosen = noninteractive_episodes(anime, "range", range_str=args.range)
                     if not chosen:
                         console.print(f"  [red]\u2717 No episodes matched:[/red] {args.range}")
-                        console.print(f"    Available: [cyan]{compact_ep_range(anime.episodes)}[/cyan]")
+                        console.print(f"    Available: [brand]{compact_ep_range(anime.episodes)}[/brand]")
                         if _scripted:
                             sys.exit(1)
                         continue
@@ -424,7 +424,7 @@ async def run(args: argparse.Namespace) -> None:
                 with contextlib.suppress(Exception):
                     shutil.rmtree(p.parent.parent)
 
-    console.print("\n  [bold cyan]Session finished.[/bold cyan]")
+    console.print("\n  [brand.bold]Session finished.[/brand.bold]")
 
 
 WATCHLIST_ALIASES = {"watchlist", "wl", "w", "watch"}
