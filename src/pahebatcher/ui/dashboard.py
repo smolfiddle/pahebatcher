@@ -44,14 +44,14 @@ class Dashboard:
 
         self._console = console
         self._progress = Progress(
-            SpinnerColumn(style="cyan", finished_text=" "),
+            SpinnerColumn(style="brand", finished_text=" "),
             TextColumn("[bold white]{task.description:<32}"),
-            BarColumn(bar_width=16, style="cyan", complete_style="bold green"),
+            BarColumn(bar_width=16, style="brand", complete_style="bold green"),
             MofNCompleteColumn(),
             TextColumn("[bold green]{task.percentage:>4.0f}%"),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
-            TextColumn("[dim cyan]{task.fields[size]:>10}[/dim cyan]"),
+            TextColumn("[brand.dim]{task.fields[size]:>10}[/brand.dim]"),
             console=console,
             expand=False,
         )
@@ -78,10 +78,10 @@ class Dashboard:
             Panel(
                 Group(header, Rule(style="dim"), self._progress),
                 title=(
-                    f"[bold cyan]pahe-batcher[/bold cyan]"
+                    f"[brand.bold]pahe-batcher[/brand.bold]"
                     f"  [dim]v{VERSION}  -  {self._total_eps} episodes[/dim]"
                 ),
-                border_style="cyan", box=box.ROUNDED, padding=(0, 1),
+                border_style="brand", box=box.ROUNDED, padding=(0, 1),
             ),
             console=self._console, refresh_per_second=8,
         )
@@ -116,7 +116,7 @@ class Dashboard:
 
     def mark_resolving(self, key: str, label: str) -> None:
         if (tid := self._tasks.get(key)) is not None:
-            self._progress.update(tid, description=f"[cyan]\u27f3 {label[:30]}[/cyan]", size="resolving")
+            self._progress.update(tid, description=f"[brand]\u27f3 {label[:30]}[/brand]", size="resolving")
 
     def mark_waiting(self, key: str, label: str) -> None:
         if (tid := self._tasks.get(key)) is not None:
@@ -124,7 +124,8 @@ class Dashboard:
 
     def mark_queued(self, key: str, label: str) -> None:
         if (tid := self._tasks.get(key)) is not None:
-            self._progress.update(tid, description=f"[dim cyan]\u231b {label[:30]}[/dim cyan]", size="queued")
+            desc = f"[brand.dim]\u231b {label[:30]}[/brand.dim]"
+            self._progress.update(tid, description=desc, size="queued")
 
     def mark_downloading(self, key: str, label: str) -> None:
         if (tid := self._tasks.get(key)) is not None:

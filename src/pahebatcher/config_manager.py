@@ -71,8 +71,8 @@ class ConfigManager:
 
         cm = ConfigManager(path)
         cm.load()
-        t = Table(box=box.ROUNDED, header_style="bold cyan", title="pahebatcher configuration")
-        t.add_column("Key", style="cyan")
+        t = Table(box=box.ROUNDED, header_style="brand.bold", title="pahebatcher configuration")
+        t.add_column("Key", style="brand")
         t.add_column("Value", style="white")
         t.add_column("Default", style="dim")
         for key in cm.DEFAULTS:
