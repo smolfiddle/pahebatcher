@@ -279,10 +279,10 @@ def cli_list(path: Path | None = None) -> None:
         console.print("\n  [dim]No watchlist entries.[/dim]")
         console.print(
             "  [dim]Add one with:[/dim] "
-            "[cyan]pahebatcher watchlist add <URL> [-q 720] [--audio eng] [-o DIR][/cyan]",
+            "[brand]pahebatcher watchlist add <URL> [-q 720] [--audio eng] [-o DIR][/brand]",
         )
         return
-    t = Table(box=box.ROUNDED, header_style="bold cyan", title=f"watchlist ({len(entries)} series)")
+    t = Table(box=box.ROUNDED, header_style="brand.bold", title=f"watchlist ({len(entries)} series)")
     t.add_column("#", justify="right", style="dim", width=4)
     t.add_column("Title", ratio=1)
     t.add_column("Quality", justify="center", width=8)
@@ -332,10 +332,10 @@ def cli_show(identifier: str, path: Path | None = None) -> None:
         dl_detail = f" [dim]({dl_detail})[/dim]"
     console.print(Panel(
         f"  [dim]Title:[/dim]       [bold white]{e.title}[/bold white]\n"
-        f"  [dim]URL:[/dim]         [cyan]{e.url}[/cyan]\n"
+        f"  [dim]URL:[/dim]         [brand]{e.url}[/brand]\n"
         f"  [dim]Session:[/dim]     {e.session}\n"
         f"  [dim]Host:[/dim]        {e.host}\n"
-        f"  [dim]Quality:[/dim]     [cyan]{e.quality}p[/cyan]\n"
+        f"  [dim]Quality:[/dim]     [brand]{e.quality}p[/brand]\n"
         f"  [dim]Audio:[/dim]       {audio_str} ({e.audio_lang})\n"
         f"  [dim]Output:[/dim]      {e.output_dir}\n"
         f"  [dim]Parallel:[/dim]    {e.max_parallel}  [dim]Workers:[/dim] {e.hls_workers}\n"
@@ -343,8 +343,8 @@ def cli_show(identifier: str, path: Path | None = None) -> None:
         f"  [dim]Downloaded:[/dim]  {dl_info}{dl_detail}\n"
         f"  [dim]Added:[/dim]       {added}\n"
         f"  [dim]Last checked:[/dim] {checked}",
-        title=f"[bold cyan]{e.title}[/bold cyan]",
-        border_style="cyan",
+        title=f"[brand.bold]{e.title}[/brand.bold]",
+        border_style="brand",
     ))
 
 
@@ -597,7 +597,7 @@ def cli_relink(
     WatchlistManager.save(entries, path)
     console.print(
         f"  [green]✓ Relinked '{old_title}'[/green] [dim]{old_session[:8]}… → {new_session[:8]}…[/dim]\n"
-        f"    {old_url} → [cyan]{entry.url}[/cyan]\n"
+        f"    {old_url} → [brand]{entry.url}[/brand]\n"
         f"  [dim]History ({len(entry.downloaded)} eps) preserved. Run check to verify.[/dim]",
     )
 
@@ -667,7 +667,7 @@ def cli_add(url: str, quality: int | None, audio_lang: str | None, output: str |
     verb = "Added" if is_new else "Updated"
     audio_str = "SUB" if a == "jpn" else "DUB"
     console.print(f"  [green]✓ {verb}[/green] [bold]{saved.title}[/bold] [dim]({saved.session})[/dim]")
-    console.print(f"    [dim]URL:[/dim]     [cyan]{saved.url}[/cyan]")
+    console.print(f"    [dim]URL:[/dim]     [brand]{saved.url}[/brand]")
     console.print(
         f"    [dim]Quality:[/dim] {saved.quality}p  [dim]Audio:[/dim] {audio_str}"
         f"  [dim]Output:[/dim] {saved.output_dir}",
@@ -711,7 +711,7 @@ async def run_watchlist_check(
     all_entries = WatchlistManager.load(path)
     if not all_entries:
         console.print("\n  [dim]No watchlist entries. Add one with:[/dim]")
-        console.print("  [cyan]pahebatcher watchlist add <URL>[/cyan]")
+        console.print("  [brand]pahebatcher watchlist add <URL>[/brand]")
         return
 
     if filter_id:
@@ -723,7 +723,7 @@ async def run_watchlist_check(
     else:
         to_check = all_entries
 
-    console.print(Rule(f"[bold white] Watchlist check — {len(to_check)} series [/bold white]", style="cyan"))
+    console.print(Rule(f"[bold white] Watchlist check — {len(to_check)} series [/bold white]", style="brand"))
 
     flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
     flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
@@ -732,7 +732,7 @@ async def run_watchlist_check(
     cache_ttl_watch = 0  # force fresh for watchlist check
     cookie_string = str(cm.get("cookie_string"))
 
-    console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="cyan"))
+    console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="brand"))
     console.print(f"  [dim]FlareSolverr:[/dim] {flaresolverr_url}  ", end="")
 
     solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
@@ -760,7 +760,7 @@ async def run_watchlist_check(
 
             for idx, entry in enumerate(to_check, 1):
                 console.print(
-                    f"\n  [cyan][{idx}/{len(to_check)}][/cyan] [bold]{entry.title}[/bold]"
+                    f"\n  [brand][{idx}/{len(to_check)}][/brand] [bold]{entry.title}[/bold]"
                     f" [dim]{entry.url}[/dim]",
                 )
                 # Need to update last_checked after each entry
@@ -1043,7 +1043,7 @@ async def run_watchlist_check(
 
                 console.print(
                     f"  [yellow]{len(pending)} new episode(s)[/yellow]"
-                    f" [dim]({len(unique_by_num)} total)[/dim] → downloading to [cyan]{full_output}[/cyan]",
+                    f" [dim]({len(unique_by_num)} total)[/dim] → downloading to [brand]{full_output}[/brand]",
                 )
 
                 # Now actually download using orchestrator (reuses resolver + segment resume)
@@ -1090,7 +1090,7 @@ async def run_watchlist_check(
             console.print(Rule("[bold green] Watchlist check complete [/bold green]", style="green"))
             table = Table(
                 box=box.SIMPLE_HEAVY, show_header=True,
-                header_style="bold cyan", border_style="dim",
+                header_style="brand.bold", border_style="dim",
             )
             table.add_column("Series", style="bold white", ratio=1, overflow="ellipsis")
             table.add_column("New", justify="center", width=6)
