@@ -51,17 +51,17 @@ class SessionManager:
 
         while True:
             console.clear()
-            console.print(Rule("[bold white] Session & Cache Manager [/bold white]", style="cyan"))
+            console.print(Rule("[bold white] Session & Cache Manager [/bold white]", style="brand"))
 
             sessions = SessionManager.get_sessions(cache_dir)
             total_size = sum(s["size"] for s in sessions)
 
             if not sessions:
                 console.print("\n  [dim]No active sessions or cache found.[/dim]")
-                Prompt.ask("\n  [cyan]Press Enter to return to menu[/cyan]")
+                Prompt.ask("\n  [brand]Press Enter to return to menu[/brand]")
                 return None
 
-            table = Table(box=box.ROUNDED, header_style="bold cyan", border_style="dim")
+            table = Table(box=box.ROUNDED, header_style="brand.bold", border_style="dim")
             table.add_column("#", justify="right", style="dim")
             table.add_column("Anime Title", ratio=1)
             table.add_column("Eps", justify="center")
@@ -76,12 +76,13 @@ class SessionManager:
                 )
 
             console.print(table)
-            console.print(f"  [dim]Total Cache Size:[/dim] [bold cyan]{fmt_bytes(total_size)}[/bold cyan]\n")
+            size_str = fmt_bytes(total_size)
+            console.print(f"  [dim]Total Cache Size:[/dim] [brand.bold]{size_str}[/brand.bold]\n")
 
             choices = ["B", "b", "R", "r", "D", "d", "C", "c"]
             prompt_text = (
-                "  [cyan][R]esume[/cyan]  [cyan][D]elete[/cyan]  "
-                "[cyan][C]lear All[/cyan]  [white][B]ack[/white] > "
+                "  [brand][R]esume[/brand]  [brand][D]elete[/brand]  "
+                "[brand][C]lear All[/brand]  [white][B]ack[/white] > "
             )
             choice = Prompt.ask(prompt_text, choices=choices, default="B", show_choices=False).upper()
 

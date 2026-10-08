@@ -26,7 +26,7 @@ class EpisodeInfo:
         import re
 
         titl = re.sub(r"\s+(?:DUB|SUB)\s*$", "", self.title or "", flags=re.I).strip() or "\u2014"
-        return f"Ep [cyan]{num:>4}[/cyan]  {titl}{dub}"
+        return f"Ep [brand]{num:>4}[/brand]  {titl}{dub}"
 
 
 @dataclass
