@@ -736,6 +736,7 @@ Areas open to contribution:
 - PyPI publication pipeline
 - Graceful shutdown on Ctrl+C (finish active downloads before exit)
 - Additional anime source support
+- Chinese/Korean audio track support (donghua/manhwa — the audio model is currently Japanese-centric: `audio_lang ∈ {jpn, eng}`, and AnimePahe itself mislabels e.g. *Full-Time Magister* as Japanese at every level, so this needs external metadata like AniList `countryOfOrigin`, not just parsing)
 - CI/CD with GitHub Actions
 - Arrow-key navigable TUI menus
 
