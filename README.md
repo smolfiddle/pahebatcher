@@ -190,6 +190,8 @@ pahebatcher installs and runs on Termux, and FlareSolverr runs there too (instal
 
 **Reopen triggers:** a visible checkbox during the loop, a solve on a different network (points at IP-tiering → `FLARESOLVERR_PROXY`), an upstream FlareSolverr/Chromium release that changes behavior, or a clean extension/component load followed by a retest. Without new evidence in one of these, please don't re-investigate — comment on the tracking issue instead.
 
+**Want to help?** Browser-side work (Chromium packaging, launch flags, stealth) belongs in the [smolfiddle/FlareSolverr fork](https://github.com/smolfiddle/FlareSolverr) — see its `docs/fork-journal.md` §8.5 for the full negative matrix so far. Device evidence with no code (transplant retests, extension-load checks, release watches) is equally valuable: see issues [#13](https://github.com/smolfiddle/pahebatcher/issues/13), [#14](https://github.com/smolfiddle/pahebatcher/issues/14), [#15](https://github.com/smolfiddle/pahebatcher/issues/15) under the tracking issue [#12](https://github.com/smolfiddle/pahebatcher/issues/12).
+
 All three methods produce the `pahebatcher` command. You can also run via `python -m pahebatcher`.
 
 > **Which binary am I running?**
