@@ -1,0 +1,4 @@
+# Unify pre-rename identity (Jessie James Jarder) under smolfiddle.
+# No history rewrite: hashes, tags, and releases stay intact.
+smolfiddle <smolfiddle@gmail.com> Jessie James Jarder <smolfiddle@gmail.com>
+smolfiddle <smolfiddle@gmail.com> Jessie James Jarder <jj.jarder.dev@gmail.com>
