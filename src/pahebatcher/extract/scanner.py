@@ -230,6 +230,8 @@ class AnimePaheScanner:
         all_sessions = await self.discover_all_sessions(self.solver, self.host, self.session)
         title = await self._fetch_title()
         if title == "Unknown Anime":
+            from pahebatcher.solver import update_hint
+
             proxy_hint = os.getenv("FLARESOLVERR_PROXY")
             proxy_msg = (
                 " Or route through a proxy/VPN via FLARESOLVERR_PROXY env var."
@@ -239,7 +241,7 @@ class AnimePaheScanner:
             console.print(
                 "\n  [yellow]Could not fetch series information.[/yellow]"
                 f"\n  [dim]FlareSolverr may be unable to bypass Cloudflare."
-                f" Try updating: docker pull ghcr.io/flaresolverr/flaresolverr"
+                f" {update_hint()}"
                 f"{proxy_msg}[/dim]\n"
             )
         anime = AnimeInfo(session=self.session, title=title, host=self.host)

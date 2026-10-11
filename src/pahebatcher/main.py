@@ -25,7 +25,7 @@ from pahebatcher.extract.scanner import AnimePaheScanner, parse_anime_url
 from pahebatcher.http import HttpClient
 from pahebatcher.models import AppContext
 from pahebatcher.sessions import SessionManager
-from pahebatcher.solver import Solver
+from pahebatcher.solver import Solver, install_hint
 from pahebatcher.stream import run_stream
 from pahebatcher.ui.console import console, print_banner
 from pahebatcher.ui.prompts import (
@@ -242,9 +242,7 @@ async def run(args: argparse.Namespace) -> None:
             console.print("[red]\u2717 not responding[/red]")
             console.print(
                 "\n  [red bold]FlareSolverr is not running![/red bold]\n"
-                "  [dim]Start it with Docker:[/dim]\n"
-                "    docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr\n"
-                "  [dim]Or set FLARESOLVERR_URL env var if it's on a different host.[/dim]"
+                f"  [dim]{install_hint()}[/dim]"
             )
             sys.exit(1)
         console.print("[green]\u2713 reachable[/green]")

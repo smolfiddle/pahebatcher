@@ -9,7 +9,36 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import aiohttp
 
-from pahebatcher.solver import Solver
+from pahebatcher.solver import Solver, install_hint, is_termux, update_hint
+
+
+class TestTermuxHints:
+    def test_not_termux_by_default(self) -> None:
+        with patch("pahebatcher.solver.os.path.exists", return_value=False), \
+             patch.dict("pahebatcher.solver.os.environ", {}, clear=True):
+            assert is_termux() is False
+
+    def test_detected_via_prefix_dir(self) -> None:
+        with patch("pahebatcher.solver.os.path.exists",
+                   side_effect=lambda p: p == "/data/data/com.termux"), \
+             patch.dict("pahebatcher.solver.os.environ", {}, clear=True):
+            assert is_termux() is True
+
+    def test_install_hint_desktop_mentions_docker(self) -> None:
+        with patch("pahebatcher.solver.is_termux", return_value=False):
+            assert "docker run" in install_hint()
+
+    def test_install_hint_termux_mentions_pkg(self) -> None:
+        with patch("pahebatcher.solver.is_termux", return_value=True):
+            hint = install_hint()
+            assert "pkg install" in hint
+            assert "docker run" not in hint
+
+    def test_update_hint(self) -> None:
+        with patch("pahebatcher.solver.is_termux", return_value=False):
+            assert "docker pull" in update_hint()
+        with patch("pahebatcher.solver.is_termux", return_value=True):
+            assert "pkg upgrade" in update_hint()
 
 
 class TestParseCookieString:
@@ -135,4 +164,46 @@ class TestSolverRequest:
         with patch.object(s, "request", new_callable=AsyncMock, return_value=None):
             result = await s.fetch_html("https://example.com")
             assert result is None
+        await s.close()
+
+
+class TestRequestBody:
+    async def _capture(self, s: Solver, **kwargs: object) -> tuple[dict, int]:
+        captured: dict = {}
+
+        async def fake_post(body: dict, timeout: int = 90) -> dict:
+            captured["body"] = body
+            captured["timeout"] = timeout
+            return {"status": "ok", "solution": {"response": "x"}}
+
+        async def fake_ensure() -> None:
+            s._session_id = "sid"
+
+        with patch.object(s, "_post", side_effect=fake_post), \
+             patch.object(s, "_ensure_session", side_effect=fake_ensure):
+            await s.request("https://example.com", cache=False, **kwargs)  # type: ignore[arg-type]
+        return captured["body"], captured["timeout"]
+
+    async def test_wait_sent_as_wait_in_seconds(self) -> None:
+        s = Solver("http://localhost:8191/v1")
+        await s.start()
+        body, _ = await self._capture(s, wait=5000)
+        assert body["waitInSeconds"] == 5
+        assert "wait" not in body
+        await s.close()
+
+    async def test_wait_default_rounds_to_seconds(self) -> None:
+        s = Solver("http://localhost:8191/v1")
+        await s.start()
+        body, _ = await self._capture(s)
+        assert body["waitInSeconds"] == 2
+        await s.close()
+
+    async def test_client_timeout_tracks_max_timeout(self) -> None:
+        s = Solver("http://localhost:8191/v1")
+        await s.start()
+        _, timeout = await self._capture(s, max_timeout=120000)
+        assert timeout == 150
+        _, timeout2 = await self._capture(s, max_timeout=180000)
+        assert timeout2 == 210
         await s.close()
