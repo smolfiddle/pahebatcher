@@ -169,6 +169,26 @@ venv\Scripts\python -m pahebatcher wl check
 
 If you hit Windows-specific issues (long paths, `sanitize` reserved names, console encoding), please open an issue mentioning Windows.
 
+### Option E: Termux / Android (known hard limits — read this first)
+
+pahebatcher installs and runs on Termux, and FlareSolverr runs there too (install, headless/headed solves, sessions, easy targets all verified on-device). But there is a documented hard limit — set expectations accordingly:
+
+**Works on Termux:**
+- `pkg`-based FlareSolverr install, headless and headed solves (~7–8s), session create/reuse/destroy
+- `pahebatcher --list`, search, downloads against easy (non-strict) targets
+- Cookie transplant for the rest (see below)
+
+**Does not work on Termux:**
+- Automated Cloudflare clearance for strict targets (e.g. AnimePahe) from Termux Chromium. The challenge page (`Just a moment…`) persists with zero clickable elements and times out — exhaustively investigated on-device (network/DNS, IP reputation, webdriver traces, mobile UA tiering, WebGL spoofing, headed/headless all ruled out; same WiFi laptop solves fine, isolating it to the Termux Chromium stack). Browser-integrity errors (e.g. extension/component load failures) at launch belong to the browser packaging, not pahebatcher — fix those first before concluding anything about clearance.
+- Cloudflare documents automated browsers (Selenium/Playwright/Puppeteer/Cypress — everything FlareSolverr drives) as unsupported for solving production challenges. This is not fixable from pahebatcher code.
+
+**Supported path for strict targets — cookie transplant:**
+1. On a machine that can solve (same WiFi, so the public IP matches): solve once in a real browser.
+2. Feed the cookie: `pahebatcher config set cookie_string "cf_clearance=XXX"` (re-run when challenges return — cookies rotate).
+3. Ensure client and cookie agree on domain (the working site is `animepahe.pw`; a `.pw` cookie presented to `.com` is invalid — the tool defaults to `.pw`).
+
+**Reopen triggers:** a visible checkbox during the loop, a solve on a different network (points at IP-tiering → `FLARESOLVERR_PROXY`), an upstream FlareSolverr/Chromium release that changes behavior, or a clean extension/component load followed by a retest. Without new evidence in one of these, please don't re-investigate — comment on the tracking issue instead.
+
 All three methods produce the `pahebatcher` command. You can also run via `python -m pahebatcher`.
 
 > **Which binary am I running?**
@@ -701,6 +721,7 @@ Shared AES cache, atomic segment writes, and glob-stable scan cache are covered 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `FlareSolverr not responding` | FlareSolverr container not running | `docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr` |
+| Termux: strict-target challenge never clears (persists `Just a moment…`, times out) | Known hard limit, not a config error — see Installation → Option E | Don't re-investigate without new evidence; use cookie transplant, comment on the tracking issue |
 | `No Kwik link found on episode page` | Site structure changed or Cloudflare blocking | Try a different quality value; ensure FlareSolverr has a healthy browser session. Alternatively set `cookie_string` with your browser's `cf_clearance` cookie |
 | `Resolution timed out` | FlareSolverr overloaded or slow network | Retry with fewer concurrent episodes (`-j 1`); the resolver retries 5 times per episode |
 | Segment download failures | CDN rate limiting | Lower `-w` to 8-12, lower `-j` to 1 |
