@@ -697,7 +697,7 @@ async def run_watchlist_check(
     from pahebatcher.downloader import BatchOrchestrator
     from pahebatcher.http import HttpClient
     from pahebatcher.models import AppContext
-    from pahebatcher.solver import Solver
+    from pahebatcher.solver import Solver, install_hint
     from pahebatcher.ui.console import console, print_banner
 
     cm = ConfigManager()
@@ -742,8 +742,7 @@ async def run_watchlist_check(
             console.print("[red]✗ not responding[/red]")
             console.print(
                 "\n  [red bold]FlareSolverr is not running![/red bold]\n"
-                "  [dim]Start it with Docker:[/dim]\n"
-                "    docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr\n"
+                f"  [dim]{install_hint()}[/dim]"
             )
             sys.exit(1)
         console.print("[green]✓ reachable[/green]")

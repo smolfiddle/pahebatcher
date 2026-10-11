@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -15,6 +16,37 @@ from pahebatcher.cache import TTLCache
 from pahebatcher.config import RETRY_ATTEMPTS, RETRY_BASE_DELAY
 
 log = logging.getLogger(__name__)
+
+
+def is_termux() -> bool:
+    """True when running inside Termux on Android."""
+    if os.path.exists("/data/data/com.termux"):
+        return True
+    return "com.termux" in os.environ.get("PREFIX", "")
+
+
+def install_hint() -> str:
+    """How to get FlareSolverr running, tailored to the current platform."""
+    if is_termux():
+        return (
+            "Start it on Termux:\n"
+            "    pkg install -y x11-repo && pkg install -y flaresolverr\n"
+            "    flaresolverr &\n"
+            "  Or the smolfiddle fork for native headless / headed LXQt:\n"
+            "    https://github.com/smolfiddle/FlareSolverr (see termux/README-termux.md)"
+        )
+    return (
+        "Start it with Docker:\n"
+        "    docker run -d --name=flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr\n"
+        "  Or set FLARESOLVERR_URL env var if it's on a different host."
+    )
+
+
+def update_hint() -> str:
+    """How to update FlareSolverr, tailored to the current platform."""
+    if is_termux():
+        return "Try updating: pkg upgrade flaresolverr (or pull the smolfiddle fork)"
+    return "Try updating: docker pull ghcr.io/flaresolverr/flaresolverr"
 
 
 class SolverError(Exception):
@@ -108,6 +140,13 @@ class Solver:
         self, url: str, cache: bool = True,
         max_timeout: int = 120000, wait: int = 2000,
     ) -> dict[str, Any] | None:
+        """Fetch a page via FlareSolverr.
+
+        ``max_timeout`` and ``wait`` are milliseconds. ``wait`` is sent as
+        FlareSolverr's ``waitInSeconds`` settle delay; the client timeout
+        tracks ``max_timeout`` plus a buffer so slow devices are not cut
+        off while the server is still solving.
+        """
         if cache and (hit := await self._solver_cache.get(url)):
             return hit  # type: ignore[no-any-return]
 
@@ -121,7 +160,7 @@ class Solver:
                     "cmd": "request.get",
                     "url": url,
                     "maxTimeout": timeout,
-                    "wait": page_wait,
+                    "waitInSeconds": max(1, round(page_wait / 1000)),
                 }
                 if self._proxy:
                     body["proxy"] = self._proxy
@@ -131,7 +170,7 @@ class Solver:
                     if self._session_id:
                         body["session"] = self._session_id
 
-                data = await self._post(body)
+                data = await self._post(body, timeout=timeout // 1000 + 30)
                 if not data:
                     if attempt < RETRY_ATTEMPTS - 1:
                         await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
