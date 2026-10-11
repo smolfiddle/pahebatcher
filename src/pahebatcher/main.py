@@ -254,7 +254,7 @@ async def run(args: argparse.Namespace) -> None:
             # Discovery
             url = args.url
             if not url:
-                url = await interactive_discovery(solver, "animepahe.com")
+                url = await interactive_discovery(solver, "animepahe.pw")
                 if not url:
                     console.print("\n  [yellow]No anime selected. Exiting.[/yellow]")
                     return

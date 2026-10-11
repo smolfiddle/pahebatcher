@@ -46,7 +46,8 @@ def parse_anime_url(url: str) -> tuple[str, str]:
 
 
 class AnimePaheScanner:
-    _current_host: str = "animepahe.com"
+    # Working site first: animepahe.pw (verified live; .com/.org are fallbacks).
+    _current_host: str = "animepahe.pw"
 
     def __init__(self, solver: Solver, host: str, session: str) -> None:
         self.solver = solver
