@@ -201,6 +201,14 @@ class AnimePaheScanner:
             pass
 
     async def scan(self, cache_dir: Path, prefer_audio: str = "jpn", cache_ttl: int = 60) -> AnimeInfo:
+        """Scan all sessions, keeping every (number, audio) variant.
+
+        NOTE: prefer_audio is intentionally NOT used to filter here.
+        Audio selection happens downstream at resolve time
+        (AnimeInfo.get_variant + extract_stream button filtering), so all
+        variants must survive the scan. Do not "optimize" this into a
+        filter — that would break the SUB/DUB fallback chain.
+        """
         from pahebatcher.ui.console import console
 
         # Try cache first — stable lookup via glob so title variation doesn't invalidate cache
