@@ -7,6 +7,8 @@ ENV/
 __pycache__/
 *.py[cod]
 *$py.class
+.mypy_cache/
+.ruff_cache/
 
 # Testing
 .pytest_cache/
