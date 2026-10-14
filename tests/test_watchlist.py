@@ -167,26 +167,44 @@ class TestAddSearch:
 
     def test_no_url_searches(self, tmp_path: Path) -> None:
         p = tmp_path / "wl.json"
-        with patch("pahebatcher.watchlist._discover_add_url", return_value=URL1) as mock_d:
+        with patch(
+            "pahebatcher.watchlist._discover_add_url", return_value=(URL1, "Found Title"),
+        ) as mock_d:
             cli_add(None, None, None, None, None, None, False, None, path=p)
         mock_d.assert_called_once_with(None)
-        assert len(WatchlistManager.load(p)) == 1
+        loaded = WatchlistManager.load(p)
+        assert len(loaded) == 1
+        assert loaded[0].title == "Found Title"
 
     def test_no_url_search_quit_is_graceful(self, tmp_path: Path) -> None:
         p = tmp_path / "wl.json"
-        with patch("pahebatcher.watchlist._discover_add_url", return_value=None):
+        with patch("pahebatcher.watchlist._discover_add_url", return_value=(None, None)):
             cli_add(None, None, None, None, None, None, False, None, path=p)
         assert WatchlistManager.load(p) == []
 
     def test_query_searches(self, tmp_path: Path) -> None:
         p = tmp_path / "wl.json"
-        with patch("pahebatcher.watchlist._discover_add_url", return_value=URL1) as mock_d:
+        with patch(
+            "pahebatcher.watchlist._discover_add_url", return_value=(URL1, "Found Title"),
+        ) as mock_d:
             cli_add("Frieren", None, None, None, None, None, False, None, path=p)
         mock_d.assert_called_once_with("Frieren")
-        assert len(WatchlistManager.load(p)) == 1
+        loaded = WatchlistManager.load(p)
+        assert len(loaded) == 1
+        assert loaded[0].title == "Found Title"
 
     def test_query_quit_is_graceful(self, tmp_path: Path) -> None:
         p = tmp_path / "wl.json"
-        with patch("pahebatcher.watchlist._discover_add_url", return_value=None):
+        with patch("pahebatcher.watchlist._discover_add_url", return_value=(None, None)):
             cli_add("Frieren", None, None, None, None, None, False, None, path=p)
         assert WatchlistManager.load(p) == []
+
+    def test_search_title_upgrades_placeholder(self, tmp_path: Path) -> None:
+        p = tmp_path / "wl.json"
+        _seed(p, [_entry("11111111-1111-1111-1111-111111111111",
+                         title="11111111-1111-1111-1111-111111111111")])
+        with patch(
+            "pahebatcher.watchlist._discover_add_url", return_value=(URL1, "Real Title"),
+        ):
+            cli_add("Frieren", None, None, None, None, None, False, None, path=p)
+        assert WatchlistManager.load(p)[0].title == "Real Title"

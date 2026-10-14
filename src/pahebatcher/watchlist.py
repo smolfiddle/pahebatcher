@@ -753,23 +753,23 @@ def _solver_from_config() -> Any:
     )
 
 
-def _discover_add_url(query: str | None) -> str | None:
+def _discover_add_url(query: str | None) -> tuple[str | None, str | None]:
     """Resolve a watchlist-add target via interactive search.
 
     ``query`` is the initial search text, or None to prompt from scratch.
-    Returns a series URL, or None if the user quit / solver is down.
+    Returns (series URL, result title), with (None, None) on quit / solver down.
     """
     import asyncio
 
     from pahebatcher.ui.console import console
 
-    async def _run() -> str | None:
+    async def _run() -> tuple[str | None, str | None]:
         solver = _solver_from_config()
         await solver.start()
         try:
             if not await solver.ping():
                 console.print("[red]✗ FlareSolverr not responding[/red]")
-                return None
+                return None, None
             from pahebatcher.ui.prompts import interactive_discovery
 
             return await interactive_discovery(solver, "animepahe.pw", initial=query)
@@ -795,16 +795,18 @@ def cli_add(url: str | None, quality: int | None, audio_lang: str | None, output
 
     if url is None:
         # No target given — interactive search (same UI as bare `pahebatcher`).
-        url = _discover_add_url(None)
+        url, found_title = _discover_add_url(None)
         if url is None:
             console.print("\n  [dim]No anime selected.[/dim]")
             return
+    else:
+        found_title = None
 
     try:
         host, session = parse_anime_url(url)
     except ValueError:
         # Not a URL — treat it as a search query.
-        url = _discover_add_url(url)
+        url, found_title = _discover_add_url(url)
         if url is None:
             console.print("\n  [dim]No anime selected.[/dim]")
             return
@@ -841,14 +843,19 @@ def cli_add(url: str | None, quality: int | None, audio_lang: str | None, output
         )
 
     canonical_url = f"https://{host}/anime/{session}"
-    # Try to fetch title quickly via cache without network if possible? Use session as placeholder
-    # We'll attempt to keep existing title if updating
-    title = session  # placeholder, will be updated on first check
+    # Search-discovered titles are real — keep them. Direct URL adds have no
+    # title yet, so use the session as a placeholder refreshed on first check.
+    # An existing real title always wins over either (see add_entry).
+    title = found_title.strip() if found_title and found_title.strip() else session
     existing_entries = WatchlistManager.load(path)
     for e in existing_entries:
-        if e.session == session:
+        if e.session != session:
+            continue
+        # Keep a usable existing title; a fresh real title beats a
+        # placeholder or a corrupted 404 one.
+        if e.title and e.title != e.session and not _is_404_title(e.title):
             title = e.title
-            break
+        break
 
     entry = WatchlistEntry(
         url=canonical_url,

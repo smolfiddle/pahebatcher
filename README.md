@@ -82,7 +82,7 @@ make help         # show all targets
 make config-show  # display current settings
 make watchlist-list  # list watchlist
 make watchlist-check # check watchlist for new episodes
-make test         # run all 254 tests
+make test         # run all 255 tests
 make lint         # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark    # full coherence benchmark
@@ -345,7 +345,7 @@ make watchlist-check     # or make run ARGS="check" / ARGS="wl c"
 - File: `watchlist.json` in `cwd` (sibling to `pahebatcher.toml`), git-ignored, survives `pahe_cache` clear and restarts. Atomic write via `.tmp`→`rename` (`watchlist.py:200`). Corrupted JSON is treated as empty.
 - Env: `WATCHLIST_PATH=/tmp/custom.json pahebatcher watchlist list` overrides location (useful for tests/cron isolation).
 - Entry fields: `url`, `session`, `host`, `title` (auto-filled on `check`), `quality`, `audio_lang`, `output_dir` (base, sanitized title appended as `os.path.join(output_dir, sanitize(title))`), `max_parallel`, `hls_workers`, `keep_temp`, `auto_retry`, `added_at`, `last_checked`, `downloaded` (list of episode numbers ever seen on disk).
-- Title is placeholder `session` on `add` and refreshed on first `check` via `scan`. Updating an existing URL keeps `added_at` and preserves a real title and `downloaded` history.
+- Title is the search result when added via search/query, else placeholder `session` for direct URL adds, refreshed on first `check` via `scan`. Updating an existing URL keeps `added_at` and preserves a real title and `downloaded` history.
 
 **Cron / systemd (one-shot only — no daemon):**
 
@@ -653,7 +653,7 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 254 tests
+make test        # run all 255 tests
 make lint        # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark   # full coherence benchmark: tests + lint + typecheck + coverage
@@ -664,7 +664,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 254 tests, asyncio auto-mode
+pytest tests/ -v              # 255 tests, asyncio auto-mode
 pytest tests/ --cov=pahebatcher --cov-report=term  # with coverage
 ruff check src/               # ALL rule select, target py311, 0 errors
 mypy src/                     # strict mode, full type coverage, 0 errors
@@ -697,10 +697,10 @@ tests/
     test_theme.py             5 tests: brand theme, banner colors
     test_utils.py             18 tests: sanitize, ep_prefix, fmt_bytes, compact_ep_range
     test_utils_extended.py    21 tests: fmt_bytes precision, sanitize edge, ep_prefix, compact ranges
-    test_watchlist.py         18 tests: history record, reset --all, wizard browser, add-search
+    test_watchlist.py         19 tests: history record, reset --all, wizard browser, add-search titles
     test_coherence.py         10 tests: benchmark (ruff/mypy green), version, config coherence
                               ─────────────────────────────────────────────────────────
-                              254 total
+                              255 total
 ```
 
 All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package installed via `pip install -e .`.
@@ -720,10 +720,10 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 ```
 ruff:       0 errors
 mypy:       0 errors
-pytest:     254 passed
-coverage:   48% (3361 stmts, 1762 missed — scrapers/downloader/stream require network/mocks)
-loc:        5436 src, 2846 tests
-density:    4.67 tests / 100 LOC
+pytest:     255 passed
+coverage:   48% (3365 stmts, 1752 missed — scrapers/downloader/stream require network/mocks)
+loc:        5445 src, 2864 tests
+density:    4.68 tests / 100 LOC
 version:    3.7.2 coherent across pyproject.toml / config.py / __init__.py
 ```
 
@@ -764,7 +764,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (254 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (255 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 

@@ -271,7 +271,8 @@ def wizard_config(defaults: AppContext, mode: str = "download") -> AppContext:
 
 async def interactive_discovery(
     solver: Solver, host: str, initial: str | None = None,
-) -> str | None:
+) -> tuple[str | None, str | None]:
+    """Interactive AnimePahe search. Returns (series URL, result title) or (None, None)."""
     from pahebatcher.extract.scanner import AnimePaheScanner
     from pahebatcher.ui.console import console
     from pahebatcher.ui.tables import search_results_table
@@ -286,7 +287,7 @@ async def interactive_discovery(
             query, pending = pending, None
             console.print(f"  [brand]Search Anime[/brand] [dim]{query}[/dim]")
         if not query or query.lower() == "q":
-            return None
+            return None, None
 
         with Progress(
             SpinnerColumn(), TextColumn(f"[bold white]Searching for '{query}'..."),
@@ -305,7 +306,7 @@ async def interactive_discovery(
             default="1",
         ).lower()
         if choice == "q":
-            return None
+            return None, None
         if choice == "s":
             continue
         with contextlib.suppress(ValueError):
@@ -314,5 +315,6 @@ async def interactive_discovery(
                 target = results[idx - 1]
                 session = target.get("session")
                 if session:
-                    return f"https://{AnimePaheScanner._current_host}/anime/{session}"
+                    title = str(target.get("title", "") or "").strip()
+                    return f"https://{AnimePaheScanner._current_host}/anime/{session}", title or None
         console.print("  [red]\u26a0 Invalid selection.[/red]")
