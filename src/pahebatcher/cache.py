@@ -31,5 +31,9 @@ class TTLCache:
         async with self._lock:
             self._data.clear()
 
+    async def discard(self, key: str) -> None:
+        async with self._lock:
+            self._data.pop(key, None)
+
     def __len__(self) -> int:
         return len(self._data)

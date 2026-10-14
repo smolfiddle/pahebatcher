@@ -395,9 +395,13 @@ def cli_relink(
             cm = ConfigManager()
             cm.load()
             cookie_string = str(cm.get("cookie_string"))
+            clearance_ttl = int(cm.get("clearance_ttl"))
             flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
             flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
-            solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+            solver = Solver(
+                flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+                clearance_ttl=clearance_ttl * 60,
+            )
             await solver.start()
             try:
                 if not await solver.ping():
@@ -498,9 +502,13 @@ def cli_relink(
             cm = ConfigManager()
             cm.load()
             cookie_string = str(cm.get("cookie_string"))
+            clearance_ttl = int(cm.get("clearance_ttl"))
             flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
             flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
-            solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+            solver = Solver(
+                flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+                clearance_ttl=clearance_ttl * 60,
+            )
             await solver.start()
             try:
                 if not await solver.ping():
@@ -731,11 +739,15 @@ async def run_watchlist_check(
     resolve_ahead = int(cm.get("resolve_ahead"))
     cache_ttl_watch = 0  # force fresh for watchlist check
     cookie_string = str(cm.get("cookie_string"))
+    clearance_ttl = int(cm.get("clearance_ttl"))
 
     console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="brand"))
     console.print(f"  [dim]FlareSolverr:[/dim] {flaresolverr_url}  ", end="")
 
-    solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+    solver = Solver(
+        flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+        clearance_ttl=clearance_ttl * 60,
+    )
     await solver.start()
     try:
         if not await solver.ping():

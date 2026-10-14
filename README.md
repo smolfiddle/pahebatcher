@@ -427,6 +427,7 @@ pahebatcher config set resolve_ahead 1    # serial resolution to avoid Cloudflar
 pahebatcher config set cache_ttl 120      # cache scan results for 2 hours
 pahebatcher config set cookie_string "cf_clearance=abc123; session=xyz"  # reuse browser cookies
 pahebatcher config set auto_retry 2         # auto-retry failed episodes (0-2, 2 = 3 total attempts)
+pahebatcher config set clearance_ttl 20     # reuse harvested clearance for 20 min (0 disables)
 pahebatcher config reset                  # restore all defaults
 ```
 
@@ -444,6 +445,9 @@ Supported keys and their valid values:
 | `cache_ttl` | integer | `60` | `0`+ (minutes before scan cache expires; `0` disables caching) |
 | `cookie_string` | string | `""` | Semicolon-delimited cookies like `cf_clearance=abc123; session=xyz` |
 | `auto_retry` | integer | `2` | `0`–`2` (0 = no retry, 2 = 3 total attempts per episode) |
+| `clearance_ttl` | integer | `20` | `0`+ (minutes a harvested `cf_clearance` is reused per domain; `0` disables the store and direct fast path) |
+
+**Clearance reuse:** `cf_clearance` values arriving in FlareSolverr responses are harvested into an in-memory, per-domain store (your transplanted `cookie_string` always wins its domain until it fails once). Uncached URLs first try a direct fetch with the live clearance and fall back to the browser path transparently — so scans paginate in seconds instead of one browser round-trip per page. Entries expire after `clearance_ttl`, refresh on every success, and are dropped the moment a challenge response proves them dead; session rotation clears the store. Harvested values live in memory only — never written to disk, never logged.
 
 ---
 

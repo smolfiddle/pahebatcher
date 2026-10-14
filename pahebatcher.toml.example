@@ -11,3 +11,4 @@ resolve_ahead = 1
 cache_ttl = 60
 cookie_string = ''
 auto_retry = 2
+clearance_ttl = 20

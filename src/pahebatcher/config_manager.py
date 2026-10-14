@@ -23,6 +23,7 @@ class ConfigManager:
         "cache_ttl": 60,
         "cookie_string": "",
         "auto_retry": 2,
+        "clearance_ttl": 20,
     }
 
     def __init__(self, path: Path | None = None) -> None:
@@ -113,6 +114,7 @@ class ConfigManager:
             "cache_ttl": lambda v: max(0, int(v)),
             "cookie_string": lambda v: str(v),
             "auto_retry": lambda v: max(0, min(2, int(v))),
+            "clearance_ttl": lambda v: max(0, int(v)),
         }
         if key not in validators:
             raise KeyError(f"Unknown config key: {key}")
@@ -133,6 +135,7 @@ class ConfigManager:
             "cache_ttl": int,
             "cookie_string": str,
             "auto_retry": int,
+            "clearance_ttl": int,
         }
         if key not in converters:
             raise KeyError(f"Unknown config key: {key}")

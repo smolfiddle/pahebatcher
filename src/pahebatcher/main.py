@@ -109,7 +109,7 @@ def build_config_parser() -> argparse.ArgumentParser:
     set_p.add_argument("key", choices=[
         "quality", "audio_lang", "max_parallel", "hls_workers",
         "output_dir", "keep_temp", "resolve_ahead", "cache_ttl", "cookie_string",
-        "auto_retry",
+        "auto_retry", "clearance_ttl",
     ])
     set_p.add_argument("value")
     cfg_sub.add_parser("reset", help="Reset all settings to defaults")
@@ -225,6 +225,7 @@ async def run(args: argparse.Namespace) -> None:
     resolve_ahead = int(cm.get("resolve_ahead"))
     cache_ttl = int(cm.get("cache_ttl"))
     cookie_string = str(cm.get("cookie_string"))
+    clearance_ttl = int(cm.get("clearance_ttl"))
     auto_retry = args.retry if args.retry is not None else int(cm.get("auto_retry"))
     auto_retry = max(0, min(2, auto_retry))
     flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
@@ -235,7 +236,10 @@ async def run(args: argparse.Namespace) -> None:
     console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="brand"))
     console.print(f"  [dim]FlareSolverr:[/dim] {flaresolverr_url}  ", end="")
 
-    solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+    solver = Solver(
+        flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+        clearance_ttl=clearance_ttl * 60,
+    )
     await solver.start()
     try:
         if not await solver.ping():

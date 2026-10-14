@@ -9,6 +9,7 @@ import logging
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -16,6 +17,60 @@ from pahebatcher.cache import TTLCache
 from pahebatcher.config import RETRY_ATTEMPTS, RETRY_BASE_DELAY
 
 log = logging.getLogger(__name__)
+
+_CHALLENGE_MARKERS = (
+    "just a moment",
+    "__cf_chl",
+    "cf-chl",
+    "checking your browser",
+    "attention required",
+    "verify you are human",
+)
+
+_DIRECT_TIMEOUT = 15
+_DIRECT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+def _host_of(url: str) -> str:
+    return urlparse(url).netloc.lower()
+
+
+def _is_challenge_body(text: str) -> bool:
+    low = text.lower()
+    return any(marker in low for marker in _CHALLENGE_MARKERS)
+
+
+def _cookie_header(cookies: list[dict[str, str]]) -> str:
+    return "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+
+
+def _direct_fetch_sync(
+    url: str, cookie_header: str, timeout: int
+) -> tuple[int, str, list[dict[str, str]]] | None:
+    """Direct fetch with clearance cookies. Returns (status, body, set-cookies).
+
+    Returns None on transport errors (caller falls back to the browser path).
+    Challenge detection is left to the caller, which owns the store.
+    Never raises.
+    """
+    try:
+        import curl_cffi.requests
+    except ImportError:
+        return None
+    try:
+        headers = {"User-Agent": _DIRECT_UA}
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        r: Any = curl_cffi.requests.get(url, impersonate="chrome120", headers=headers, timeout=timeout)
+        text = bytes(r.content).decode("utf-8", errors="replace")
+        jar: Any = r.cookies
+        set_cookies = [{"name": str(k), "value": str(v)} for k, v in jar.items()]
+        return int(r.status_code), text, set_cookies
+    except Exception:
+        return None
 
 
 def is_termux() -> bool:
@@ -54,7 +109,13 @@ class SolverError(Exception):
 
 
 class Solver:
-    def __init__(self, base_url: str, proxy: str | None = None, user_cookies: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        proxy: str | None = None,
+        user_cookies: str = "",
+        clearance_ttl: float = 1200.0,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._proxy = proxy
         self._session_id: str | None = None
@@ -63,6 +124,12 @@ class Solver:
         self._solver_cache = TTLCache(ttl=120.0, max_size=256)
         self._http_session: aiohttp.ClientSession | None = None
         self._user_cookies = self._parse_cookie_string(user_cookies)
+        # Clearance store: live cf_clearance per domain, harvested from
+        # successful responses. clearance_ttl <= 0 disables the store and
+        # the direct fast path (legacy behavior: transplant always sent).
+        self._clearance_ttl = clearance_ttl
+        self._clearance = TTLCache(ttl=clearance_ttl, max_size=64)
+        self._clearance_dead: set[str] = set()
 
     @staticmethod
     def _parse_cookie_string(s: str) -> list[dict[str, str]]:
@@ -75,6 +142,65 @@ class Solver:
                 name, _, value = part.partition("=")
                 cookies.append({"name": name.strip(), "value": value.strip()})
         return cookies
+
+    async def _clearance_for(self, host: str) -> tuple[list[dict[str, str]], str]:
+        """Pick clearance cookies for host: transplant unless marked dead, else harvested.
+
+        Returns (cookies, source) with source in {"user", "harvested", "none"}.
+        Memory only — harvested values are never persisted to disk.
+        """
+        if self._user_cookies:
+            async with self._lock:
+                dead = host in self._clearance_dead
+            if not dead:
+                return list(self._user_cookies), "user"
+        if self._clearance_ttl > 0:
+            hit = await self._clearance.get(host)
+            if isinstance(hit, list) and hit:
+                return [dict(c) for c in hit if isinstance(c, dict)], "harvested"
+        return [], "none"
+
+    async def _note_clearance_success(self, host: str, cookies: list[Any]) -> None:
+        """Harvest cf_clearance from a successful response for later reuse."""
+        if self._clearance_ttl <= 0:
+            return
+        found: list[dict[str, str]] = []
+        for c in cookies:
+            if not isinstance(c, dict):
+                continue
+            name, value = str(c.get("name", "")), c.get("value", "")
+            if name == "cf_clearance" and value:
+                found.append({"name": name, "value": str(value)})
+        if found:
+            await self._clearance.set(host, found)
+
+    async def _note_clearance_dead(self, host: str, source: str) -> None:
+        """Drop clearance that just failed a challenge for host."""
+        if self._clearance_ttl <= 0:
+            return
+        await self._clearance.discard(host)
+        if source == "user":
+            async with self._lock:
+                self._clearance_dead.add(host)
+
+    async def _direct_request(
+        self, url: str, host: str, cookies: list[dict[str, str]], source: str
+    ) -> dict[str, Any] | None:
+        """Direct fetch shaped like a FlareSolverr solution, or None to fall back."""
+        loop = asyncio.get_running_loop()
+        fetched = await loop.run_in_executor(
+            None, _direct_fetch_sync, url, _cookie_header(cookies), _DIRECT_TIMEOUT
+        )
+        if fetched is None:
+            return None  # transport error or no curl — transient, keep store
+        status, text, set_cookies = fetched
+        if _is_challenge_body(text):
+            await self._note_clearance_dead(host, source)
+            return None
+        if status != 200:
+            return None  # e.g. rate limit — transient, keep store
+        await self._note_clearance_success(host, set_cookies)
+        return {"response": text, "cookies": set_cookies, "userAgent": _DIRECT_UA}
 
     async def start(self) -> None:
         self._http_session = aiohttp.ClientSession(
@@ -150,12 +276,25 @@ class Solver:
         if cache and (hit := await self._solver_cache.get(url)):
             return hit  # type: ignore[no-any-return]
 
+        host = _host_of(url)
+        # Fast path: direct fetch with live clearance (transplant or
+        # harvested). Falls back to the browser path transparently.
+        if self._clearance_ttl > 0:
+            fast_cookies, fast_source = await self._clearance_for(host)
+            if fast_cookies:
+                sol = await self._direct_request(url, host, fast_cookies, fast_source)
+                if sol is not None:
+                    if cache:
+                        await self._solver_cache.set(url, sol)
+                    return sol
+
         async with self._sem:
             await self._ensure_session()
             session_rotated = False
             timeout = max_timeout
             page_wait = wait
             for attempt in range(RETRY_ATTEMPTS):
+                send_cookies, send_source = await self._clearance_for(host)
                 body: dict[str, Any] = {
                     "cmd": "request.get",
                     "url": url,
@@ -164,8 +303,8 @@ class Solver:
                 }
                 if self._proxy:
                     body["proxy"] = self._proxy
-                if self._user_cookies:
-                    body["cookies"] = self._user_cookies
+                if send_cookies:
+                    body["cookies"] = send_cookies
                 async with self._lock:
                     if self._session_id:
                         body["session"] = self._session_id
@@ -178,8 +317,14 @@ class Solver:
 
                 if data.get("status") == "ok":
                     sol = data.get("solution")
-                    if sol and cache:
-                        await self._solver_cache.set(url, sol)
+                    if sol:
+                        cookies_val = sol.get("cookies", [])
+                        cookies_list: list[dict[str, Any]] = (
+                            list(cookies_val) if isinstance(cookies_val, list) else []
+                        )
+                        await self._note_clearance_success(host, cookies_list)
+                        if cache:
+                            await self._solver_cache.set(url, sol)
                     return sol
 
                 msg = data.get("message", "")
@@ -190,6 +335,7 @@ class Solver:
                         self._session_id = None
                     await self._ensure_session()
                 elif "cloudflare" in msg.lower() or "challenge" in msg.lower():
+                    await self._note_clearance_dead(host, send_source)
                     if not session_rotated:
                         log.warning("Cloudflare blocked — rotating session and retrying with longer timeout.")
                         await self.destroy_session()

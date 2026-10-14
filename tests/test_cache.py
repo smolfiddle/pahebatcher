@@ -44,6 +44,15 @@ class TestTTLCache:
         assert await cache.get("k1") is None
         assert await cache.get("k2") is None
 
+    async def test_discard(self) -> None:
+        cache = TTLCache(max_size=10)
+        await cache.set("k1", "v1")
+        await cache.set("k2", "v2")
+        await cache.discard("k1")
+        assert await cache.get("k1") is None
+        assert await cache.get("k2") == "v2"
+        await cache.discard("missing")  # no-op, no error
+
     async def test_len(self) -> None:
         cache = TTLCache(max_size=10)
         await cache.set("k1", "v1")
