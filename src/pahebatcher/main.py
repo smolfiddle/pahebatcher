@@ -144,7 +144,10 @@ def build_watchlist_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="watchlist_action", required=True)
 
     p_add = sub.add_parser("add", aliases=["a"], help="Add anime to watchlist")
-    p_add.add_argument("url", help="AnimePahe series URL")
+    p_add.add_argument(
+        "url", nargs="?", default=None,
+        help="AnimePahe series URL, search query, or omit to search interactively",
+    )
     p_add.add_argument(
         "-q", "--quality", type=int, choices=[360, 720, 1080],
         default=None, help="Quality: 360, 720, or 1080",

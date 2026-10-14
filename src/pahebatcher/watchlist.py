@@ -737,16 +737,82 @@ def cli_relink(
     )
 
 
-def cli_add(url: str, quality: int | None, audio_lang: str | None, output: str | None,
+def _solver_from_config() -> Any:
+    """Build a Solver from persisted config + env. Caller must start/close it."""
+    from pahebatcher.solver import Solver
+
+    cm = ConfigManager()
+    cm.load()
+    cookie_string = str(cm.get("cookie_string"))
+    clearance_ttl = int(cm.get("clearance_ttl"))
+    flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+    flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
+    return Solver(
+        flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+        clearance_ttl=clearance_ttl * 60,
+    )
+
+
+def _discover_add_url(query: str | None) -> str | None:
+    """Resolve a watchlist-add target via interactive search.
+
+    ``query`` is the initial search text, or None to prompt from scratch.
+    Returns a series URL, or None if the user quit / solver is down.
+    """
+    import asyncio
+
+    from pahebatcher.ui.console import console
+
+    async def _run() -> str | None:
+        solver = _solver_from_config()
+        await solver.start()
+        try:
+            if not await solver.ping():
+                console.print("[red]✗ FlareSolverr not responding[/red]")
+                return None
+            from pahebatcher.ui.prompts import interactive_discovery
+
+            return await interactive_discovery(solver, "animepahe.pw", initial=query)
+        finally:
+            await solver.close()
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None and loop.is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, _run()).result()
+    return asyncio.run(_run())
+
+
+def cli_add(url: str | None, quality: int | None, audio_lang: str | None, output: str | None,
             parallel: int | None, workers: int | None, keep_temp: bool, retry: int | None,
             path: Path | None = None) -> None:
     from pahebatcher.ui.console import console
 
+    if url is None:
+        # No target given — interactive search (same UI as bare `pahebatcher`).
+        url = _discover_add_url(None)
+        if url is None:
+            console.print("\n  [dim]No anime selected.[/dim]")
+            return
+
     try:
         host, session = parse_anime_url(url)
-    except ValueError as exc:
-        console.print(f"\n  [red]✗ Invalid URL:[/red] {exc}")
-        sys.exit(1)
+    except ValueError:
+        # Not a URL — treat it as a search query.
+        url = _discover_add_url(url)
+        if url is None:
+            console.print("\n  [dim]No anime selected.[/dim]")
+            return
+        try:
+            host, session = parse_anime_url(url)
+        except ValueError as exc:
+            console.print(f"\n  [red]✗ Invalid URL:[/red] {exc}")
+            sys.exit(1)
 
     cm = ConfigManager()
     cm.load()

@@ -82,7 +82,7 @@ make help         # show all targets
 make config-show  # display current settings
 make watchlist-list  # list watchlist
 make watchlist-check # check watchlist for new episodes
-make test         # run all 249 tests
+make test         # run all 254 tests
 make lint         # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark    # full coherence benchmark
@@ -303,7 +303,7 @@ Track weekly airing shows without re-running the tool manually. Add a series onc
 
 **Workflow:**
 
-1. `add` validates the AnimePahe URL (`extract/scanner.py:32`), normalizes to `https://<host>/anime/<uuid>`, and saves prefs. Without flags it inherits `pahebatcher.toml` (`config_manager.py:15`).
+1. `add` validates the AnimePahe URL (`extract/scanner.py:32`), normalizes to `https://<host>/anime/<uuid>`, and saves prefs. Without flags it inherits `pahebatcher.toml` (`config_manager.py:15`). Omit the URL (or pass a search query) to pick the series from interactive search instead — same UI as bare `pahebatcher`.
 2. `list`/`show`/`remove`/`reset` manage state. `show`/`remove`/`reset` accept `1`-based index, full URL, session UUID, or title substring (`watchlist.py:206`).
 3. `check` is one-shot: for each entry it `scan`s with `cache_ttl=0` (forces fresh, unlike normal `60` min cache), diffs against files on disk via `BatchOrchestrator._find_existing()` (`downloader.py:154` — `Ep 001` / `Ep_001` prefix, size>0), **plus remembers deleted episodes while the series folder exists** (`downloaded` history `watchlist.py:136`), and reuses the 2-stage pipeline. Already-present MP4s are skipped, partial `.ts` segments are resumed. Running it again immediately downloads nothing.
 
@@ -312,6 +312,8 @@ Track weekly airing shows without re-running the tool manually. Add a series onc
 pahebatcher watchlist add https://animepahe.pw/anime/<uuid> -q 1080 --audio jpn -o ~/anime
 pahebatcher wl add https://animepahe.pw/anime/<uuid> --audio eng -q 720 -j 2 -w 24 --keep-temp --retry 2  # wl/w = shorthand
 pahebatcher w add https://animepahe.pw/anime/<uuid>          # uses pahebatcher.toml defaults
+pahebatcher wl add Frieren                                    # search query — pick from results
+pahebatcher wl add                                           # no target — interactive search
 
 # List / inspect / remove / reset / relink ( --yes skips confirmation)
 pahebatcher watchlist list  # or wl list, wl ls, wl l
@@ -494,7 +496,7 @@ pahebatcher [URL] [options]
 
 | Command | Description |
 |---|---|
-| `pahebatcher watchlist add <URL> [-q Q] [--audio LANG] [-o DIR] [-j N] [-w N] [--keep-temp] [--retry N]` <br> `pahebatcher wl a <URL>` | Add anime to watchlist (mirrors download flags) |
+| `pahebatcher watchlist add <URL> [-q Q] [--audio LANG] [-o DIR] [-j N] [-w N] [--keep-temp] [--retry N]` <br> `pahebatcher wl a <URL>` / `wl add <query>` / `wl add` (search) | Add anime to watchlist (mirrors download flags; omits URL → same interactive search as bare `pahebatcher`) |
 | `pahebatcher watchlist check [--verbose] [URL|#]` <br> `pahebatcher check` / `pahebatcher wl c` / `pahebatcher sync` | Scan all watched anime for new episodes and download |
 | `pahebatcher watchlist list` <br> `pahebatcher wl ls` / `wl l` | List watchlist entries |
 | `pahebatcher watchlist show <URL|#>` <br> `pahebatcher wl s 1` | Show details for one entry |
@@ -651,7 +653,7 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 249 tests
+make test        # run all 254 tests
 make lint        # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark   # full coherence benchmark: tests + lint + typecheck + coverage
@@ -662,7 +664,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 249 tests, asyncio auto-mode
+pytest tests/ -v              # 254 tests, asyncio auto-mode
 pytest tests/ --cov=pahebatcher --cov-report=term  # with coverage
 ruff check src/               # ALL rule select, target py311, 0 errors
 mypy src/                     # strict mode, full type coverage, 0 errors
@@ -695,10 +697,10 @@ tests/
     test_theme.py             5 tests: brand theme, banner colors
     test_utils.py             18 tests: sanitize, ep_prefix, fmt_bytes, compact_ep_range
     test_utils_extended.py    21 tests: fmt_bytes precision, sanitize edge, ep_prefix, compact ranges
-    test_watchlist.py         13 tests: history record, reset --all, wizard browser
+    test_watchlist.py         18 tests: history record, reset --all, wizard browser, add-search
     test_coherence.py         10 tests: benchmark (ruff/mypy green), version, config coherence
                               ─────────────────────────────────────────────────────────
-                              249 total
+                              254 total
 ```
 
 All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package installed via `pip install -e .`.
@@ -718,10 +720,10 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 ```
 ruff:       0 errors
 mypy:       0 errors
-pytest:     249 passed
-coverage:   47% (3314 stmts, 1765 missed — scrapers/downloader/stream require network/mocks)
-loc:        5360 src, 2803 tests
-density:    4.65 tests / 100 LOC
+pytest:     254 passed
+coverage:   48% (3361 stmts, 1762 missed — scrapers/downloader/stream require network/mocks)
+loc:        5436 src, 2846 tests
+density:    4.67 tests / 100 LOC
 version:    3.7.2 coherent across pyproject.toml / config.py / __init__.py
 ```
 
@@ -762,7 +764,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (249 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (254 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 

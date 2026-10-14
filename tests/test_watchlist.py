@@ -11,6 +11,7 @@ import pytest
 from pahebatcher.watchlist import (
     WatchlistEntry,
     WatchlistManager,
+    cli_add,
     cli_reset,
     record_watchlist_download,
     run_watchlist_browser,
@@ -147,3 +148,45 @@ class TestBrowser:
 
             assert asyncio.run(run_watchlist_browser()) == (None, None)
             mock_check.assert_called_once_with()
+
+
+URL1 = "https://animepahe.pw/anime/11111111-1111-1111-1111-111111111111"
+
+
+class TestAddSearch:
+    def test_url_stays_offline(self, tmp_path: Path) -> None:
+        p = tmp_path / "wl.json"
+        with patch(
+            "pahebatcher.watchlist._discover_add_url",
+            side_effect=AssertionError("must not search for a URL"),
+        ):
+            cli_add(URL1, None, None, None, None, None, False, None, path=p)
+        loaded = WatchlistManager.load(p)
+        assert len(loaded) == 1
+        assert loaded[0].session == "11111111-1111-1111-1111-111111111111"
+
+    def test_no_url_searches(self, tmp_path: Path) -> None:
+        p = tmp_path / "wl.json"
+        with patch("pahebatcher.watchlist._discover_add_url", return_value=URL1) as mock_d:
+            cli_add(None, None, None, None, None, None, False, None, path=p)
+        mock_d.assert_called_once_with(None)
+        assert len(WatchlistManager.load(p)) == 1
+
+    def test_no_url_search_quit_is_graceful(self, tmp_path: Path) -> None:
+        p = tmp_path / "wl.json"
+        with patch("pahebatcher.watchlist._discover_add_url", return_value=None):
+            cli_add(None, None, None, None, None, None, False, None, path=p)
+        assert WatchlistManager.load(p) == []
+
+    def test_query_searches(self, tmp_path: Path) -> None:
+        p = tmp_path / "wl.json"
+        with patch("pahebatcher.watchlist._discover_add_url", return_value=URL1) as mock_d:
+            cli_add("Frieren", None, None, None, None, None, False, None, path=p)
+        mock_d.assert_called_once_with("Frieren")
+        assert len(WatchlistManager.load(p)) == 1
+
+    def test_query_quit_is_graceful(self, tmp_path: Path) -> None:
+        p = tmp_path / "wl.json"
+        with patch("pahebatcher.watchlist._discover_add_url", return_value=None):
+            cli_add("Frieren", None, None, None, None, None, False, None, path=p)
+        assert WatchlistManager.load(p) == []
