@@ -396,6 +396,111 @@ def cli_reset(
     console.print(f"  [green]✓ Reset[/green] '{entry.title}' [dim](cleared {cleared} history)[/dim]")
 
 
+def record_watchlist_download(
+    session: str, title: str, ep_numbers: list[float], path: Path | None = None,
+) -> bool:
+    """Merge successful wizard-download episodes into watchlist history.
+
+    Returns True if a matching entry was found and updated.
+    Skips placeholder/404 titles so a bad scan never clobbers a real one.
+    """
+    entries = WatchlistManager.load(path)
+    for e in entries:
+        if e.session != session:
+            continue
+        if title and title != "Unknown Anime" and not _is_404_title(title):
+            e.title = title
+        seen = set(e.downloaded)
+        for n in ep_numbers:
+            fn = float(n)
+            if fn not in seen:
+                seen.add(fn)
+                e.downloaded.append(fn)
+        e.downloaded = sorted(e.downloaded)
+        e.last_checked = time.time()
+        WatchlistManager.save(entries, path)
+        return True
+    return False
+
+
+async def run_watchlist_browser() -> tuple[str | None, WatchlistEntry | None]:
+    """Interactive watchlist browser for the wizard.
+
+    Returns (url, entry) to open for download, or (None, None) to go back.
+    Check actions run inline via the existing one-shot check path.
+    """
+    from rich import box
+    from rich.panel import Panel
+    from rich.prompt import Prompt
+    from rich.rule import Rule
+    from rich.table import Table
+
+    from pahebatcher.ui.console import console
+
+    while True:
+        entries = WatchlistManager.load()
+        if not entries:
+            console.print("\n  [dim]No watchlist entries.[/dim]")
+            console.print(
+                "  [dim]Add one with:[/dim] "
+                "[brand]pahebatcher watchlist add <URL> [-q 720] [--audio eng] [-o DIR][/brand]",
+            )
+            Prompt.ask("\n  [brand]Press Enter to return[/brand]", default="")
+            return None, None
+
+        console.print()
+        console.print(Rule("[bold white] Watchlist [/bold white]", style="brand"))
+        t = Table(box=box.ROUNDED, header_style="brand.bold", title=f"watchlist ({len(entries)} series)")
+        t.add_column("#", justify="right", style="dim", width=4)
+        t.add_column("Title", ratio=1)
+        t.add_column("Quality", justify="center", width=8)
+        t.add_column("Audio", justify="center", width=6)
+        for i, e in enumerate(entries, 1):
+            t.add_row(str(i), e.title, f"{e.quality}p", audio_badge(e.audio_lang))
+        console.print(t)
+        console.print(
+            "  [dim]Saved quality/audio per entry. Full detail:[/dim]"
+            " [brand]pahebatcher wl show <#>/[/brand]",
+        )
+        cmd = Prompt.ask(
+            "  [brand][#] open  [C]heck new  [B]ack[/brand]", default="B", show_choices=False,
+        ).strip().lower()
+        if cmd in ("b", "back", ""):
+            return None, None
+        if cmd in ("c", "check"):
+            await run_watchlist_check()
+            continue
+        if not cmd.isdigit():
+            console.print("  [red]⚠ Invalid selection.[/red]")
+            continue
+        idx = int(cmd) - 1
+        if not 0 <= idx < len(entries):
+            console.print("  [red]⚠ Invalid selection.[/red]")
+            continue
+        entry = entries[idx]
+        console.print(Panel(
+            f"  [dim]Quality:[/dim]     [brand]{entry.quality}p[/brand]\n"
+            f"  [dim]Audio:[/dim]       {'SUB' if entry.audio_lang == 'jpn' else 'DUB'}"
+            f" ({entry.audio_lang})\n"
+            f"  [dim]Output:[/dim]      {entry.output_dir}\n"
+            f"  [dim]Downloaded:[/dim]  {len(entry.downloaded)} eps\n"
+            f"  [dim]URL:[/dim]         [brand]{entry.url}[/brand]",
+            title=f"[brand.bold]{entry.title}[/brand.bold]",
+            border_style="brand", box=box.ROUNDED, padding=(0, 2),
+        ))
+        sub = Prompt.ask(
+            "  [brand][D]ownload  [C]heck new  [B]ack[/brand]", default="D", show_choices=False,
+        ).strip().lower()
+        if sub in ("b", "back"):
+            continue
+        if sub in ("c", "check"):
+            await run_watchlist_check(filter_id=entry.session)
+            continue
+        if sub in ("d", "download", ""):
+            return entry.url, entry
+        console.print("  [red]⚠ Invalid selection.[/red]")
+
+
 def cli_relink(
     identifier: str | None = None, new_url: str | None = None, path: Path | None = None
 ) -> None:

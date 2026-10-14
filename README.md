@@ -82,7 +82,7 @@ make help         # show all targets
 make config-show  # display current settings
 make watchlist-list  # list watchlist
 make watchlist-check # check watchlist for new episodes
-make test         # run all 236 tests
+make test         # run all 249 tests
 make lint         # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark    # full coherence benchmark
@@ -410,6 +410,8 @@ pahebatcher wl show 1   # shows new URL, still Downloaded: [1,2,3]
 - Audio fallback mirrors download: `get_variant(num, audio_lang)` or first variant.
 - No notifications, daemon, or scheduler — user wires to `cron`.
 
+**Wizard browser:** from the download action menu press `W` to browse tracked series with their saved prefs. Pick one by number to open it for episode selection + download (entry prefs win unless a CLI flag was explicit; `downloaded` history is updated afterwards), or `C` to check for new episodes without leaving interactive mode. Add/remove/relink stay CLI-only (`wl add`, `wl remove`, `wl relink`).
+
 ### Configuration
 
 Settings are persisted at `pahebatcher.toml` in the current directory and loaded on every run. Saved defaults apply to every session, CLI flags override them, and the interactive wizard auto-saves whatever is chosen.
@@ -649,7 +651,7 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 236 tests
+make test        # run all 249 tests
 make lint        # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark   # full coherence benchmark: tests + lint + typecheck + coverage
@@ -660,7 +662,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 236 tests, asyncio auto-mode
+pytest tests/ -v              # 249 tests, asyncio auto-mode
 pytest tests/ --cov=pahebatcher --cov-report=term  # with coverage
 ruff check src/               # ALL rule select, target py311, 0 errors
 mypy src/                     # strict mode, full type coverage, 0 errors
@@ -693,9 +695,10 @@ tests/
     test_theme.py             5 tests: brand theme, banner colors
     test_utils.py             18 tests: sanitize, ep_prefix, fmt_bytes, compact_ep_range
     test_utils_extended.py    21 tests: fmt_bytes precision, sanitize edge, ep_prefix, compact ranges
+    test_watchlist.py         13 tests: history record, reset --all, wizard browser
     test_coherence.py         10 tests: benchmark (ruff/mypy green), version, config coherence
                               ─────────────────────────────────────────────────────────
-                              236 total
+                              249 total
 ```
 
 All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package installed via `pip install -e .`.
@@ -715,10 +718,10 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 ```
 ruff:       0 errors
 mypy:       0 errors
-pytest:     236 passed
-coverage:   43% (3193 stmts, 1823 missed — scrapers/downloader/stream require network/mocks)
-loc:        5171 src, 2654 tests
-density:    4.56 tests / 100 LOC
+pytest:     249 passed
+coverage:   47% (3314 stmts, 1765 missed — scrapers/downloader/stream require network/mocks)
+loc:        5360 src, 2803 tests
+density:    4.65 tests / 100 LOC
 version:    3.7.2 coherent across pyproject.toml / config.py / __init__.py
 ```
 
@@ -759,7 +762,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (236 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (249 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 

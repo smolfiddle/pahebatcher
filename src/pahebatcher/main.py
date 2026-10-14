@@ -269,6 +269,20 @@ async def run(args: argparse.Namespace) -> None:
 
             host, session = parse_anime_url(url)
 
+            # Watchlist jump (wizard browser): entry prefs win unless a CLI flag was explicit.
+            wl_entry = getattr(args, "_watchlist_entry", None)
+            if wl_entry is not None and wl_entry.session != session:
+                wl_entry = None
+            if wl_entry is not None:
+                if args.quality is None:
+                    quality = wl_entry.quality
+                if args.audio_lang is None:
+                    audio_lang = wl_entry.audio_lang
+                if args.parallel is None:
+                    parallel = max(1, min(6, wl_entry.max_parallel))
+                if args.workers is None:
+                    workers = max(8, min(32, wl_entry.hls_workers))
+
             # Scan
             scanner = AnimePaheScanner(solver, host, session)
             anime = await scanner.scan(cache_dir, prefer_audio=audio_lang, cache_ttl=cache_ttl)
@@ -292,7 +306,8 @@ async def run(args: argparse.Namespace) -> None:
 
             _scripted = bool(args.all or args.range or args.latest or args.stream)
             safe_title = sanitize(anime.title)
-            default_output = os.path.join(args.output, safe_title)
+            output_base = wl_entry.output_dir if wl_entry is not None else args.output
+            default_output = os.path.join(output_base, safe_title)
 
             while True:
                 if _scripted:
@@ -303,6 +318,12 @@ async def run(args: argparse.Namespace) -> None:
                     sessions = SessionManager.get_sessions(cache_dir)
                     total_cache = sum(s["size"] for s in sessions)
                     cache_hint = f" [dim]({fmt_bytes(total_cache)})[/dim]" if total_cache > 0 else ""
+                    wl_count = 0
+                    with contextlib.suppress(Exception):
+                        from pahebatcher.watchlist import WatchlistManager
+
+                        wl_count = len(WatchlistManager.load())
+                    wl_hint = f" [dim]({wl_count} tracked)[/dim]" if wl_count > 0 else ""
 
                     console.print(Panel(
                         "  [bold white]1[/bold white]  [brand]Download[/brand]"
@@ -312,16 +333,27 @@ async def run(args: argparse.Namespace) -> None:
                         f"  [bold white]3[/bold white]  [brand]Sessions & Cache[/brand]{cache_hint}\n"
                         "  [bold white]4[/bold white]  [brand]List[/brand]"
                         "      [dim]\u00b7 show episode table[/dim]\n"
+                        f"  [bold white]W[/bold white]  [brand]Watchlist[/brand]{wl_hint}\n"
                         "  [bold white]5[/bold white]  [red]Exit[/red]",
                         title=f"[brand.bold]{anime.title}[/brand.bold]",
                         border_style="brand", box=box.ROUNDED, padding=(0, 2),
                     ))
                     choice = Prompt.ask(
                         "  [brand]Select action[/brand]",
-                        choices=["1", "2", "3", "4", "5"], default="1", show_choices=False,
+                        choices=["1", "2", "3", "4", "5", "W", "w"], default="1", show_choices=False,
                     )
                     if choice == "5":
                         break
+                    if choice.upper() == "W":
+                        from pahebatcher.watchlist import run_watchlist_browser
+
+                        new_url, wl_ent = await run_watchlist_browser()
+                        if new_url and new_url != args.url:
+                            args.url = new_url
+                            if wl_ent is not None:
+                                args._watchlist_entry = wl_ent
+                            return await run(args)
+                        continue
                     if choice == "4":
                         t = Table(box=box.SIMPLE, show_header=True, header_style="brand.bold")
                         t.add_column("Ep", width=6, justify="right")
@@ -370,6 +402,21 @@ async def run(args: argparse.Namespace) -> None:
                         resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
                         cookie_string=cookie_string, auto_retry=auto_retry,
                     )
+                elif wl_entry is not None:
+                    audio_badge_text = "[cyan]SUB[/cyan]" if audio_lang == "jpn" else "[yellow]DUB[/yellow]"
+                    console.print(
+                        f"\n  [dim]Using watchlist prefs for '{wl_entry.title}':"
+                        f"  {audio_badge_text}  {quality}p  {parallel} concurrent  {workers} workers[/dim]\n"
+                    )
+                    ctx = AppContext(
+                        output_dir=default_output, cache_dir=cache_dir,
+                        quality=quality, audio_lang=audio_lang,
+                        max_parallel=parallel, hls_workers=workers,
+                        keep_temp=wl_entry.keep_temp, list_only=False,
+                        flaresolverr_url=flaresolverr_url,
+                        resolve_ahead=resolve_ahead, cache_ttl=cache_ttl,
+                        cookie_string=cookie_string, auto_retry=wl_entry.auto_retry,
+                    )
                 elif cm.is_customized():
                     audio_badge_text = "[cyan]SUB[/cyan]" if audio_lang == "jpn" else "[yellow]DUB[/yellow]"
                     console.print(
@@ -413,7 +460,18 @@ async def run(args: argparse.Namespace) -> None:
                     if not _scripted and not confirm_download(anime, chosen, ctx):
                         continue
                     orch = BatchOrchestrator(ctx, anime, http, solver)
-                    await orch.download(chosen)
+                    results = await orch.download(chosen)
+                    if wl_entry is not None:
+                        from pahebatcher.watchlist import record_watchlist_download
+
+                        done_nums = [ep.number for ep in chosen if results.get(ep.session) is not None]
+                        updated = False
+                        with contextlib.suppress(Exception):
+                            updated = record_watchlist_download(anime.session, anime.title, done_nums)
+                        if updated:
+                            console.print(
+                                f"  [dim]Watchlist history updated for '{anime.title}'[/dim]",
+                            )
 
                 break
 
