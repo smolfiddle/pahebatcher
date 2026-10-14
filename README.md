@@ -135,7 +135,7 @@ pahebatcher
 
 ### Option D: Windows (native — not tested by developer)
 
-> **Note:** The developer has never tested pahebatcher on actual Windows. The Python code is OS-neutral (`pathlib`/`asyncio`, `store.py:40` atomic `.tmp→.ts`, `pyproject.toml:8` `Operating System :: OS Independent`), but Windows has only been reasoned about, not run. WSL2 is the safer bet if you hit edge cases.
+> **Note:** The developer has never tested pahebatcher on actual Windows. The Python code is OS-neutral (`pathlib`/`asyncio`, `store.py:178` atomic `.tmp→.ts`, `pyproject.toml:18` `Operating System :: OS Independent`), but Windows has only been reasoned about, not run. WSL2 is the safer bet if you hit edge cases.
 
 **Prerequisites (Windows):**
 
@@ -163,7 +163,7 @@ venv\Scripts\python -m pahebatcher wl check
 
 **Windows differences:**
 
-- No `make` — use `venv\Scripts\python -m pahebatcher ...` directly (`Makefile:42` is Unix-only).
+- No `make` — use `venv\Scripts\python -m pahebatcher ...` directly (`Makefile:108` is Unix-only).
 - No `cron` — use Task Scheduler: Create Task → Trigger daily/hourly → Action `Start a program` → Program `C:\path\to\pahebatcher\venv\Scripts\python.exe` → Arguments `-m pahebatcher wl check` → Start in `C:\path\to\pahebatcher` (so `watchlist.json`/`pahe_cache` resolve, `WATCHLIST_PATH` also works).
 - Paths use `.\` and `venv\Scripts\` on Windows vs `venv/bin/` on Linux/macOS.
 
@@ -303,9 +303,9 @@ Track weekly airing shows without re-running the tool manually. Add a series onc
 
 **Workflow:**
 
-1. `add` validates the AnimePahe URL (`scanner.py:30`), normalizes to `https://<host>/anime/<uuid>`, and saves prefs. Without flags it inherits `pahebatcher.toml` (`config_manager.py:15`).
-2. `list`/`show`/`remove`/`reset` manage state. `show`/`remove`/`reset` accept `1`-based index, full URL, session UUID, or title substring (`watchlist.py:103`).
-3. `check` is one-shot: for each entry it `scan`s with `cache_ttl=0` (forces fresh, unlike normal `60` min cache), diffs against files on disk via `BatchOrchestrator._find_existing()` (`downloader.py:154` — `Ep 001` / `Ep_001` prefix, size>0), **plus remembers deleted episodes while the series folder exists** (`downloaded` history `watchlist.py:30`), and reuses the 2-stage pipeline. Already-present MP4s are skipped, partial `.ts` segments are resumed. Running it again immediately downloads nothing.
+1. `add` validates the AnimePahe URL (`extract/scanner.py:32`), normalizes to `https://<host>/anime/<uuid>`, and saves prefs. Without flags it inherits `pahebatcher.toml` (`config_manager.py:15`).
+2. `list`/`show`/`remove`/`reset` manage state. `show`/`remove`/`reset` accept `1`-based index, full URL, session UUID, or title substring (`watchlist.py:206`).
+3. `check` is one-shot: for each entry it `scan`s with `cache_ttl=0` (forces fresh, unlike normal `60` min cache), diffs against files on disk via `BatchOrchestrator._find_existing()` (`downloader.py:154` — `Ep 001` / `Ep_001` prefix, size>0), **plus remembers deleted episodes while the series folder exists** (`downloaded` history `watchlist.py:136`), and reuses the 2-stage pipeline. Already-present MP4s are skipped, partial `.ts` segments are resumed. Running it again immediately downloads nothing.
 
 ```bash
 # Add a series to the watchlist (mirrors download flags) — long or short
@@ -321,7 +321,6 @@ pahebatcher wl remove 1 --yes   # also rm/r/del
 pahebatcher wl reset 1      # also rst/clear — clear deleted-history
 pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>  # fix one dead link
 pahebatcher wl relink 1     # auto — finds new UUID by title (no URL needed)
-pahebatcher wl relink       # one command — auto-relinks ALL dead entries
 pahebatcher wl relink       # one command — auto-relinks ALL dead entries
 
 # Check for new episodes and download (one-shot, cron-friendly)
@@ -340,7 +339,7 @@ make watchlist-check     # or make run ARGS="check" / ARGS="wl c"
 
 **State & persistence:**
 
-- File: `watchlist.json` in `cwd` (sibling to `pahebatcher.toml`), git-ignored, survives `pahe_cache` clear and restarts. Atomic write via `.tmp`→`rename` (`watchlist.py:98`). Corrupted JSON is treated as empty.
+- File: `watchlist.json` in `cwd` (sibling to `pahebatcher.toml`), git-ignored, survives `pahe_cache` clear and restarts. Atomic write via `.tmp`→`rename` (`watchlist.py:200`). Corrupted JSON is treated as empty.
 - Env: `WATCHLIST_PATH=/tmp/custom.json pahebatcher watchlist list` overrides location (useful for tests/cron isolation).
 - Entry fields: `url`, `session`, `host`, `title` (auto-filled on `check`), `quality`, `audio_lang`, `output_dir` (base, sanitized title appended as `os.path.join(output_dir, sanitize(title))`), `max_parallel`, `hls_workers`, `keep_temp`, `auto_retry`, `added_at`, `last_checked`, `downloaded` (list of episode numbers ever seen on disk).
 - Title is placeholder `session` on `add` and refreshed on first `check` via `scan`. Updating an existing URL keeps `added_at` and preserves a real title and `downloaded` history.
@@ -373,7 +372,7 @@ pahebatcher check             # run again → still 0 new, same skip
 ```
 
 - **While the series folder exists** (`downloads/Saga.../`), any `downloaded` number not on disk is treated as *intentionally deleted* and **skipped**. `check` reports `1 skipped (deleted)` in dim text.
-- **When you delete the whole series folder** (`rm -rf downloads/Saga.../`), next `check` prints `Folder not found (.../Saga...) — resetting skip history` (`watchlist.py:456`) and clears `downloaded` to `[]` — all missing episodes become new again. Folder deletion = coherent “forget” signal.
+- **When you delete the whole series folder** (`rm -rf downloads/Saga.../`), next `check` prints `Folder not found (.../Saga...) — resetting skip history` (`watchlist.py:1003`) and clears `downloaded` to `[]` — all missing episodes become new again. Folder deletion = coherent “forget” signal.
 - **Want a deleted episode back without wiping the folder?** `pahebatcher wl reset 1` (or `wl rst 1`, URL/#) clears history for that entry; next `check` will re-download the missing file:
   ```bash
   pahebatcher wl reset 1
@@ -384,7 +383,7 @@ pahebatcher check             # run again → still 0 new, same skip
 
 **Dead links / UUID rotation (auto-migrate — shared helper):**
 
-AnimePahe sometimes re-uploads the same title under a new UUID — the old `.../anime/<old-uuid>` then returns `Unknown Anime` / `Oops... 404` / `0 eps`. `check` and `relink` now delegate to the **same** helper (`_find_single_new_session` / `_relink_entry_via_search` `watchlist.py:39`) — `AnimePaheScanner.search` host-rotating `pw/com/org` (`scanner.py:55`) + exact `_normalize_title` match + `_recover_title_from_cache` for `Oops...` — so they never disagree, and `0` vs `2+` vs `unknown_title` are surfaced distinctly:
+AnimePahe sometimes re-uploads the same title under a new UUID — the old `.../anime/<old-uuid>` then returns `Unknown Anime` / `Oops... 404` / `0 eps`. `check` and `relink` now delegate to the **same** helper (`_find_single_new_session` / `_relink_entry_via_search` `watchlist.py:59`) — `AnimePaheScanner.search` host-rotating `pw/com/org` (`extract/scanner.py:58`) + exact `_normalize_title` match + `_recover_title_from_cache` for `Oops...` — so they never disagree, and `0` vs `2+` vs `unknown_title` are surfaced distinctly:
 
 - **Exactly one new session** → updates `watchlist.json` in-place (`session`/`host`/`url`), preserves prefs + `downloaded`, prints `↻ Relinked 'Title': <old>… → <new>…`, rescans and continues.
 - **0 candidates** → `✗ No new session found for 'Title'.` + `Use: pahebatcher wl relink <id> <new-url>`
@@ -439,7 +438,7 @@ Supported keys and their valid values:
 | `audio_lang` | string | `jpn` | `jpn`, `eng` |
 | `max_parallel` | integer | `2` | `1`–`6` |
 | `hls_workers` | integer | `24` | `8`–`32` |
-| `output_dir` | string | `.` | Any valid path |
+| `output_dir` | string | `./downloads` | Any valid path |
 | `keep_temp` | boolean | `false` | `true`, `false` |
 | `resolve_ahead` | integer | `999` | `0`+ (how many episodes the resolver stays ahead of downloaders; set to `1` for serial resolution) |
 | `cache_ttl` | integer | `60` | `0`+ (minutes before scan cache expires; `0` disables caching) |
@@ -447,7 +446,7 @@ Supported keys and their valid values:
 | `auto_retry` | integer | `2` | `0`–`2` (0 = no retry, 2 = 3 total attempts per episode) |
 | `clearance_ttl` | integer | `20` | `0`+ (minutes a harvested `cf_clearance` is reused per domain; `0` disables the store and direct fast path) |
 
-**Clearance reuse:** `cf_clearance` values arriving in FlareSolverr responses are harvested into an in-memory, per-domain store (your transplanted `cookie_string` always wins its domain until it fails once). Uncached URLs first try a direct fetch with the live clearance and fall back to the browser path transparently — so scans paginate in seconds instead of one browser round-trip per page. Entries expire after `clearance_ttl`, refresh on every success, and are dropped the moment a challenge response proves them dead; session rotation clears the store. Harvested values live in memory only — never written to disk, never logged.
+**Clearance reuse:** `cf_clearance` values arriving in FlareSolverr responses are harvested into an in-memory, per-domain store (your transplanted `cookie_string` always wins its domain until it fails once). Uncached URLs first try a direct fetch with the live clearance and fall back to the browser path transparently — so scans paginate in seconds instead of one browser round-trip per page. Entries expire after `clearance_ttl`, are refreshed whenever a response carries a new `cf_clearance`, and the per-host entry is dropped the moment a challenge response proves it dead. Harvested values live in memory only — never written to disk, never logged.
 
 ---
 
@@ -488,7 +487,7 @@ pahebatcher [URL] [options]
 | `pahebatcher config set KEY VALUE` | Persist a setting (see Configuration section for key list) |
 | `pahebatcher config reset` | Restore all settings to factory defaults |
 
-### Watchlist commands (shorthand: `wl`, `w`, `watch` = `watchlist`; `check`/`sync` top-level)
+### Watchlist commands (shorthand: `wl`, `w`, `watch` = `watchlist`; `check`/`sync`/`update` and `relink`/`link`/`migrate` top-level)
 
 | Command | Description |
 |---|---|
@@ -502,12 +501,12 @@ pahebatcher [URL] [options]
 
 ### Watchlist specifics
 
-- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync` = `watchlist check`; sub-aliases `a`/`ls`/`l`/`s`/`rm`/`rst`/`c`/`link` (`main.py:121`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
-- **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:30`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
-- **Dead links (shared helper):** `check` and `relink` delegate to the same `_find_single_new_session` / `_relink_entry_via_search` (`watchlist.py:39`) — `search` + `_normalize_title` + `_recover_title_from_cache` — so they never disagree. Exactly one match → `↻ Relinked`; `0` → `No new session found`; `2+` → `Multiple candidates — ambiguous`; placeholder/`Oops...` → `title unknown` — each prints `Use: pahebatcher wl relink <id> <new-url>`. `wl relink` (no args) fixes all dead in one command.
+- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync`/`update` = `watchlist check`, top-level `relink`/`link`/`migrate` = `watchlist relink`; sub-aliases `a`/`ls`/`l`/`s`+`info`/`rm`+`r`+`del`+`delete`/`rst`+`clear`/`c`+`sync`+`update`/`link`+`migrate`+`update-url` (`main.py:432`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
+- **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:136`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
+- **Dead links (shared helper):** `check` and `relink` delegate to the same `_find_single_new_session` / `_relink_entry_via_search` (`watchlist.py:59`) — `search` + `_normalize_title` + `_recover_title_from_cache` — so they never disagree. Exactly one match → `↻ Relinked`; `0` → `No new session found`; `2+` → `Multiple candidates — ambiguous`; placeholder/`Oops...` → `title unknown` — each prints `Use: pahebatcher wl relink <id> <new-url>`. `wl relink` (no args) fixes all dead in one command.
 - **State file:** `watchlist.json` (JSON list of entries with `downloaded: [1,2]`). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
-- **Make:** `make run ARGS="watchlist ..."` / `make run ARGS="wl c"` / `make run ARGS="check"` forward through the project venv (see `Makefile:42`); `make watchlist-list` / `make watchlist-check` are shortcuts.
-- **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:43` `tool.setuptools.packages.find`), so `pahebatcher watchlist` / `wl` / `check` work identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
+- **Make:** `make run ARGS="watchlist ..."` / `make run ARGS="wl c"` / `make run ARGS="check"` forward through the project venv (see `Makefile:108`); `make watchlist-list` / `make watchlist-check` are shortcuts.
+- **Pipx/pip:** installed wheel includes `watchlist.py` (`pyproject.toml:46` `tool.setuptools.packages.find`), so `pahebatcher watchlist` / `wl` / `check` work identically with `make run`, `venv/bin/pahebatcher`, and `python -m pahebatcher`.
 
 ### Concurrency tuning
 
@@ -533,7 +532,7 @@ The combined maximum concurrent TCP streams is `parallel * workers` (default: 2 
   |  FlareSolverr uses a single Chromium tab.                   |
   +-------------------------------------------------------------+
                             |
-                            v  (asyncio.Queue, capacity = max_parallel + 2)
+                            v  (asyncio.Queue, capacity = resolve_ahead + max_parallel)
   +-------------------------------------------------------------+
   |  Stage 2 -- Downloaders (concurrent, N workers)             |
   |  Each downloads HLS segments in parallel (24 workers per    |
@@ -639,6 +638,7 @@ src/pahebatcher/
         dashboard.py         Live progress dashboard with per-episode state transitions
         tables.py            Table rendering helpers (episodes, search results, summary)
         prompts.py           Episode selection, download confirmation, settings wizard
+        theme.py             Brand theme (AnimePahe pink palette)
 ```
 
 ---
@@ -741,12 +741,12 @@ Shared AES cache, atomic segment writes, and glob-stable scan cache are covered 
 | ARM64 (OrangepiZero3) `vo`/`hwdec` fail / slow software render | Mali/Panfrost not detected, `mpv` minimal build | `sudo apt install mpv ffmpeg ca-certificates`; try `mpv --hwdec=no --vo=gpu` or `--vo=drm --ao=alsa`; Armbian kernel recompile may be needed for GPU |
 | Slow single-episode downloads | Low segment concurrency | Increase `-w` to 24-32; HLS segments are ~100 KB each and benefit from high parallelism |
 | Cache directory growing too large | Old sessions accumulating | Use Session Manager (option 3 from main menu) to clear stale entries; >24h orphans are auto-cleaned |
-| `watchlist.json` corrupted / `No watchlist entries` after edit | Hand-edited JSON invalid | Delete or `python -m json.tool watchlist.json` to validate; `load()` treats invalid as empty (`watchlist.py:76`) — re-add entries |
+| `watchlist.json` corrupted / `No watchlist entries` after edit | Hand-edited JSON invalid | Delete or `python -m json.tool watchlist.json` to validate; `load()` treats invalid as empty (`watchlist.py:178`) — re-add entries |
 | `watchlist check` says `Up to date` but new episode expected | Scan cache stale or wrong `audio_lang` / `output_dir` | `check` forces `cache_ttl=0`; verify entry with `watchlist show 1` (audio/output); check `watchlist.json` output_dir matches where you look |
 | `watchlist check` downloads nothing after move | Output files moved / renamed | `_find_existing` matches `Ep 001`/`Ep_001` prefix only (`downloader.py:154`); rename back or re-add entry |
-| `watchlist add` updates instead of duplicates | Same `session` UUID | Intentional dedupe (`watchlist.py:134`); use `watchlist list` to see, `remove` first if you need a clean add |
-| `watchlist` output in `/tmp` warns `volatile tmpfs` | `output_dir` `/tmp` is `tmpfs` cleared on reboot | Use persistent `./downloads` (default) or `~/anime`; otherwise `watchlist` folder-gone reset will redownload after reboot (`watchlist.py:305`) |
-| `pahebatcher: error: unrecognized arguments: check` | Global `pahebatcher` stale (pipx <3.7.2) vs `venv` 3.7.2 with `watchlist` (`main.py:414`) | `make run` uses `venv` and works; for global use `venv/bin/pahebatcher watchlist check`, `venv/bin/python -m pahebatcher watchlist check`, or `make watchlist-check`, or refresh pipx: `pipx install . --force && hash -r` |
+| `watchlist add` updates instead of duplicates | Same `session` UUID | Intentional dedupe (`watchlist.py:239`); use `watchlist list` to see, `remove` first if you need a clean add |
+| `watchlist` output in `/tmp` warns `volatile tmpfs` | `output_dir` `/tmp` is `tmpfs` cleared on reboot | Use persistent `./downloads` (default) or `~/anime`; otherwise `watchlist` folder-gone reset will redownload after reboot (`watchlist.py:1003`) |
+| `pahebatcher: error: unrecognized arguments: check` | Global `pahebatcher` stale (pipx <3.7.2) vs `venv` 3.7.2 with `watchlist` (`main.py:501`) | `make run` uses `venv` and works; for global use `venv/bin/pahebatcher watchlist check`, `venv/bin/python -m pahebatcher watchlist check`, or `make watchlist-check`, or refresh pipx: `pipx install . --force && hash -r` |
 
 ---
 

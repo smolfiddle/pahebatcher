@@ -1,5 +1,7 @@
 # pahebatcher configuration — copy to pahebatcher.toml and edit
 # This file is the committed example; pahebatcher.toml itself is git-ignored.
+# Note: resolve_ahead = 1 here is the recommended serial setting;
+# the code default is 999 (unlimited prefetch).
 
 quality = 1080
 audio_lang = 'jpn'
