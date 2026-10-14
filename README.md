@@ -82,7 +82,7 @@ make help         # show all targets
 make config-show  # display current settings
 make watchlist-list  # list watchlist
 make watchlist-check # check watchlist for new episodes
-make test         # run all 220 tests
+make test         # run all 236 tests
 make lint         # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark    # full coherence benchmark
@@ -648,7 +648,7 @@ src/pahebatcher/
 ### Quick commands
 
 ```bash
-make test        # run all 220 tests
+make test        # run all 236 tests
 make lint        # ruff check (0 errors)
 make typecheck    # mypy strict (0 errors)
 make benchmark   # full coherence benchmark: tests + lint + typecheck + coverage
@@ -659,7 +659,7 @@ make clean       # remove venv, caches, build artifacts
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v              # 220 tests, asyncio auto-mode
+pytest tests/ -v              # 236 tests, asyncio auto-mode
 pytest tests/ --cov=pahebatcher --cov-report=term  # with coverage
 ruff check src/               # ALL rule select, target py311, 0 errors
 mypy src/                     # strict mode, full type coverage, 0 errors
@@ -670,29 +670,31 @@ mypy src/                     # strict mode, full type coverage, 0 errors
 ```
 tests/
     conftest.py               Fixtures: mock solver, mock http, sample data
-    test_cache.py             8 tests: set/get, eviction, expiry, concurrent access
+    test_cache.py             9 tests: set/get, eviction, expiry, discard, concurrent access
+    test_clearance.py         15 tests: fast path, harvest/precedence, invalidation, TTL
     test_config_manager.py    10 tests: defaults, save/load, validation, clamping, existence
-    test_config_extended.py   6 tests: constants, validation edge, roundtrip, corrupted TOML
-    test_kwik.py              7 tests: JsPacker, M3U8 extraction, resolution buttons
+    test_config_extended.py   8 tests: constants, validation edge, roundtrip, corrupted TOML
+    test_kwik.py              9 tests: JsPacker, M3U8 extraction, resolution buttons
     test_m3u8.py              8 tests: playlist parsing, AES keys, variant detection
     test_models.py            11 tests: dataclass fields, properties, edge cases (incl. cookie_str)
     test_prompts.py           11 tests: episode range parsing, noninteractive selection
     test_scanner.py           12 tests: URL validation, episode page parsing, search
-    test_scanner_extended.py  7 tests: cache path, TTL expiry, glob-stable cache, scan fallback
+    test_scanner_extended.py  11 tests: cache path, TTL expiry, glob-stable cache, scan fallback
     test_sessions.py          4 tests: cache listing, metadata, error handling
-    test_solver.py            16 tests: cookie parsing, lifecycle, ping, cache, fetch_json/html
+    test_solver.py            24 tests: cookie parsing, lifecycle, ping, cache, fetch_json/html, bodies
     test_http.py              8 tests: thread-local session, lifecycle, retry, 403 fallback, curl fetch
     test_tls.py               4 tests: TLS version, verify mode, ciphers, compression
     test_store.py             7 tests: segment I/O, atomic writes, assemble, cleanup
-    test_store_extended.py    7 tests: atomic tmp handling, metadata, concat cleanup, pipe fallback
+    test_store_extended.py    15 tests: atomic tmp handling, metadata, concat cleanup, pipe fallback
     test_downloader.py        7 tests: _find_existing, skip-existing, mocked download flow
     test_retry.py             4 tests: episode/retry (3 attempts), resolver retry, batch auto-retry
     test_ui.py                5 tests: episode/search/summary tables, dedup
-    test_utils.py             20 tests: sanitize, ep_prefix, fmt_bytes, compact_ep_range
+    test_theme.py             5 tests: brand theme, banner colors
+    test_utils.py             18 tests: sanitize, ep_prefix, fmt_bytes, compact_ep_range
     test_utils_extended.py    21 tests: fmt_bytes precision, sanitize edge, ep_prefix, compact ranges
-    test_coherence.py         7 tests: benchmark (ruff/mypy green), version, config coherence
+    test_coherence.py         10 tests: benchmark (ruff/mypy green), version, config coherence
                               ─────────────────────────────────────────────────────────
-                              195 total
+                              236 total
 ```
 
 All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package installed via `pip install -e .`.
@@ -712,10 +714,10 @@ All tests run under `PYTHONPATH=src pytest tests/ -v` or with the package instal
 ```
 ruff:       0 errors
 mypy:       0 errors
-pytest:     220 passed
-coverage:   52% (1941 stmts, 938 missed — scrapers/downloader/stream require network/mocks)
-loc:        3025 src, 1879 tests
-density:    6.44 tests / 100 LOC
+pytest:     236 passed
+coverage:   43% (3193 stmts, 1823 missed — scrapers/downloader/stream require network/mocks)
+loc:        5171 src, 2654 tests
+density:    4.56 tests / 100 LOC
 version:    3.7.2 coherent across pyproject.toml / config.py / __init__.py
 ```
 
@@ -756,7 +758,7 @@ Bug reports, feature requests, and pull requests are welcome.
 2. Create a feature branch (`git checkout -b feature/description`)
 3. Install dev dependencies: `pip install -e ".[dev]"`
 4. Make changes; ensure `make lint` and `make typecheck` pass
-5. Add or update tests; ensure `make test` passes (220 tests, asyncio auto-mode)
+5. Add or update tests; ensure `make test` passes (236 tests, asyncio auto-mode)
 6. Commit with a conventional prefix (`fix:`, `feat:`, `refactor:`, `docs:`, `chore:`)
 7. Push and open a pull request
 
