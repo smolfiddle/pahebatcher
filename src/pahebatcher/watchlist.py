@@ -359,10 +359,32 @@ def cli_remove(identifier: str, path: Path | None = None) -> None:
     console.print(f"  [green]✓ Removed[/green] '{removed.title}' [dim]({remaining} remaining)[/dim]")
 
 
-def cli_reset(identifier: str, path: Path | None = None) -> None:
+def cli_reset(
+    identifier: str | None = None, path: Path | None = None, reset_all: bool = False,
+) -> None:
     from pahebatcher.ui.console import console
 
     entries = WatchlistManager.load(path)
+    if not entries:
+        console.print("\n  [dim]No watchlist entries.[/dim]")
+        return
+    wants_all = reset_all or (identifier is not None and identifier.strip().lower() in ("all", "*"))
+    if wants_all:
+        total = sum(len(e.downloaded) for e in entries)
+        for e in entries:
+            e.downloaded = []
+        WatchlistManager.save(entries, path)
+        console.print(
+            f"  [green]✓ Reset[/green] {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}"
+            f" [dim](cleared {total} history)[/dim]",
+        )
+        return
+    if not identifier:
+        console.print(
+            "\n  [red]✗ Missing identifier.[/red]\n"
+            "  [dim]Use: pahebatcher wl reset <id>  or  pahebatcher wl reset --all[/dim]",
+        )
+        sys.exit(2)
     found = WatchlistManager.find_entry(entries, identifier)
     if not found:
         console.print(f"\n  [red]✗ No entry found for:[/red] {identifier}")

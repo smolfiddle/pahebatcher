@@ -319,6 +319,7 @@ pahebatcher wl show 1       # s/info also work: wl s 1
 pahebatcher wl show https://animepahe.pw/anime/<uuid>
 pahebatcher wl remove 1 --yes   # also rm/r/del
 pahebatcher wl reset 1      # also rst/clear — clear deleted-history
+pahebatcher wl reset --all  # clear deleted-history for ALL entries (or: wl reset all)
 pahebatcher wl relink 1 https://animepahe.pw/anime/<new-uuid>  # fix one dead link
 pahebatcher wl relink 1     # auto — finds new UUID by title (no URL needed)
 pahebatcher wl relink       # one command — auto-relinks ALL dead entries
@@ -496,7 +497,7 @@ pahebatcher [URL] [options]
 | `pahebatcher watchlist list` <br> `pahebatcher wl ls` / `wl l` | List watchlist entries |
 | `pahebatcher watchlist show <URL|#>` <br> `pahebatcher wl s 1` | Show details for one entry |
 | `pahebatcher watchlist remove <URL|#> [--yes]` <br> `pahebatcher wl rm 1` | Remove entry from watchlist |
-| `pahebatcher watchlist reset <URL|#>` <br> `pahebatcher wl rst 1` | Clear deleted-history so deleted episodes will be re-downloaded |
+| `pahebatcher watchlist reset <URL|#> [--all]` <br> `pahebatcher wl rst 1` / `wl reset --all` | Clear deleted-history so deleted episodes will be re-downloaded |
 | `pahebatcher watchlist relink [ID] [new-URL]` <br> `pahebatcher wl relink` (all) / `wl relink 1` (auto) / `wl relink 1 <url>` | Relink dead entry(s) to new UUID by title (preserves history; `check` also auto-migrates) |
 
 ### Watchlist specifics

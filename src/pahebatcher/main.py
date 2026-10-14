@@ -179,9 +179,13 @@ def build_watchlist_parser() -> argparse.ArgumentParser:
 
     p_reset = sub.add_parser(
         "reset", aliases=["rst", "clear"],
-        help="Clear skip history for an entry (re-download deleted)",
+        help="Clear skip history for an entry (re-download deleted) — --all for all entries",
     )
-    p_reset.add_argument("identifier", help="URL, session UUID, title substring, or 1-based index")
+    p_reset.add_argument(
+        "identifier", nargs="?", default=None,
+        help="URL, session UUID, title substring, 1-based index, or 'all'",
+    )
+    p_reset.add_argument("--all", action="store_true", help="Reset skip history for all entries")
 
     p_relink = sub.add_parser(
         "relink", aliases=["link", "migrate", "update-url"],
@@ -546,7 +550,7 @@ def main() -> None:
                 elif act in ("reset", "rst", "clear"):
                     from pahebatcher.watchlist import cli_reset
 
-                    cli_reset(wl_args.identifier)
+                    cli_reset(wl_args.identifier, reset_all=bool(wl_args.all))
                 elif act in ("relink", "link", "migrate", "update-url"):
                     from pahebatcher.watchlist import cli_relink
 
