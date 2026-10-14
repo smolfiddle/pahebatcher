@@ -383,6 +383,7 @@ pahebatcher check             # run again → still 0 new, same skip
   ```
 - Backfill: on first `check` with existing files, they are added to `downloaded` automatically, so old entries migrate without manual edit.
 - One-time rebuild: if `downloaded` was empty (e.g., right after `relink` before any `check`), missing files are seen as new and will be redownloaded **once** to rebuild history. After that, future single-file deletes are `skipped (deleted)` as above.
+- **Starting over (watched it all, want a clean slate)?** `reset` is the wrong tool — with deleted files and empty history, next `check` sees every missing episode as brand-new and re-downloads whole seasons. Instead, delete the tracking itself: `rm watchlist.json` in the same directory you run the commands from (that's the file holding the entries), confirm with `wl list` (`No watchlist entries`), then `wl add` the new season fresh. A new season on a separate AnimePahe page needs its own entry anyway — the old UUID will never see those episodes.
 
 **Dead links / UUID rotation (auto-migrate — shared helper):**
 
