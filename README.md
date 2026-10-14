@@ -375,7 +375,7 @@ pahebatcher check             # run again → still 0 new, same skip
 ```
 
 - **While the series folder exists** (`downloads/Saga.../`), any `downloaded` number not on disk is treated as *intentionally deleted* and **skipped**. `check` reports `1 skipped (deleted)` in dim text.
-- **When you delete the whole series folder** (`rm -rf downloads/Saga.../`), next `check` prints `Folder not found (.../Saga...) — resetting skip history` (`watchlist.py:1003`) and clears `downloaded` to `[]` — all missing episodes become new again. Folder deletion = coherent “forget” signal.
+- **When you delete the whole series folder** (`rm -rf downloads/Saga.../`), next `check` prints `Folder not found (.../Saga...) — resetting skip history` (`watchlist.py:1203`) and clears `downloaded` to `[]` — all missing episodes become new again. Folder deletion = coherent “forget” signal.
 - **Want a deleted episode back without wiping the folder?** `pahebatcher wl reset 1` (or `wl rst 1`, URL/#) clears history for that entry; next `check` will re-download the missing file:
   ```bash
   pahebatcher wl reset 1
@@ -507,7 +507,7 @@ pahebatcher [URL] [options]
 
 ### Watchlist specifics
 
-- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync`/`update` = `watchlist check`, top-level `relink`/`link`/`migrate` = `watchlist relink`; sub-aliases `a`/`ls`/`l`/`s`+`info`/`rm`+`r`+`del`+`delete`/`rst`+`clear`/`c`+`sync`+`update`/`link`+`migrate`+`update-url` (`main.py:432`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
+- **Shorthand:** `watchlist` = `wl` = `w` = `watch`; top-level `check`/`sync`/`update` = `watchlist check`, top-level `relink`/`link`/`migrate` = `watchlist relink`; sub-aliases `a`/`ls`/`l`/`s`+`info`/`rm`+`r`+`del`+`delete`/`rst`+`clear`/`c`+`sync`+`update`/`link`+`migrate`+`update-url` (`main.py:497`). Examples: `pahebatcher wl add ...`, `pahebatcher check`, `pahebatcher wl ls`, `pahebatcher wl c`.
 - **Idempotency & deleted skip:** `check` diffs `scan` vs. `output_dir` via `_find_existing` + `downloaded` history (`watchlist.py:136`). While `output_dir/sanitize(title)` exists, a once-downloaded but now-deleted episode shows `skipped (deleted)` and is not re-downloaded. Deleting the whole folder resets history (next `check` redownloads). `watchlist reset 1` clears history manually.
 - **Dead links (shared helper):** `check` and `relink` delegate to the same `_find_single_new_session` / `_relink_entry_via_search` (`watchlist.py:59`) — `search` + `_normalize_title` + `_recover_title_from_cache` — so they never disagree. Exactly one match → `↻ Relinked`; `0` → `No new session found`; `2+` → `Multiple candidates — ambiguous`; placeholder/`Oops...` → `title unknown` — each prints `Use: pahebatcher wl relink <id> <new-url>`. `wl relink` (no args) fixes all dead in one command.
 - **State file:** `watchlist.json` (JSON list of entries with `downloaded: [1,2]`). Back it up like `pahebatcher.toml`. Remove entries via `watchlist remove` or delete the file.
@@ -752,7 +752,7 @@ Shared AES cache, atomic segment writes, and glob-stable scan cache are covered 
 | `watchlist check` says `Up to date` but new episode expected | Scan cache stale or wrong `audio_lang` / `output_dir` | `check` forces `cache_ttl=0`; verify entry with `watchlist show 1` (audio/output); check `watchlist.json` output_dir matches where you look |
 | `watchlist check` downloads nothing after move | Output files moved / renamed | `_find_existing` matches `Ep 001`/`Ep_001` prefix only (`downloader.py:154`); rename back or re-add entry |
 | `watchlist add` updates instead of duplicates | Same `session` UUID | Intentional dedupe (`watchlist.py:239`); use `watchlist list` to see, `remove` first if you need a clean add |
-| `watchlist` output in `/tmp` warns `volatile tmpfs` | `output_dir` `/tmp` is `tmpfs` cleared on reboot | Use persistent `./downloads` (default) or `~/anime`; otherwise `watchlist` folder-gone reset will redownload after reboot (`watchlist.py:1003`) |
+| `watchlist` output in `/tmp` warns `volatile tmpfs` | `output_dir` `/tmp` is `tmpfs` cleared on reboot | Use persistent `./downloads` (default) or `~/anime`; otherwise `watchlist` folder-gone reset will redownload after reboot (`watchlist.py:1203`) |
 | `pahebatcher: error: unrecognized arguments: check` | Global `pahebatcher` stale (pipx <3.8.0) vs `venv` 3.8.0 with `watchlist` (`main.py:566`) | `make run` uses `venv` and works; for global use `venv/bin/pahebatcher watchlist check`, `venv/bin/python -m pahebatcher watchlist check`, or `make watchlist-check`, or refresh pipx: `pipx install . --force && hash -r` |
 
 ---
