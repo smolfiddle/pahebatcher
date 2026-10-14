@@ -37,7 +37,7 @@ help:
 	@echo '  $(PYTHON) -m pahebatcher watchlist remove 1 --yes'
 	@echo ""
 	@echo "Dev:"
-	@echo "  make test         run 220 tests"
+	@echo "  make test         run 255 tests"
 	@echo "  make lint         ruff check (0 errors)"
 	@echo "  make typecheck    mypy strict (0 errors)"
 	@echo "  make benchmark    full coherence benchmark"

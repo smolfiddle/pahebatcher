@@ -269,17 +269,25 @@ def wizard_config(defaults: AppContext, mode: str = "download") -> AppContext:
     return replace(defaults, quality=quality, audio_lang=audio_lang)
 
 
-async def interactive_discovery(solver: Solver, host: str) -> str | None:
+async def interactive_discovery(
+    solver: Solver, host: str, initial: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Interactive AnimePahe search. Returns (series URL, result title) or (None, None)."""
     from pahebatcher.extract.scanner import AnimePaheScanner
     from pahebatcher.ui.console import console
     from pahebatcher.ui.tables import search_results_table
 
+    pending = initial.strip() if initial and initial.strip() else None
     while True:
         console.print()
         console.print(Rule("[bold white] Search & Discovery [/bold white]", style="brand"))
-        query = Prompt.ask("  [brand]Search Anime[/brand] [dim](or 'q' to quit)[/dim]").strip()
+        if pending is None:
+            query = Prompt.ask("  [brand]Search Anime[/brand] [dim](or 'q' to quit)[/dim]").strip()
+        else:
+            query, pending = pending, None
+            console.print(f"  [brand]Search Anime[/brand] [dim]{query}[/dim]")
         if not query or query.lower() == "q":
-            return None
+            return None, None
 
         with Progress(
             SpinnerColumn(), TextColumn(f"[bold white]Searching for '{query}'..."),
@@ -298,7 +306,7 @@ async def interactive_discovery(solver: Solver, host: str) -> str | None:
             default="1",
         ).lower()
         if choice == "q":
-            return None
+            return None, None
         if choice == "s":
             continue
         with contextlib.suppress(ValueError):
@@ -307,5 +315,6 @@ async def interactive_discovery(solver: Solver, host: str) -> str | None:
                 target = results[idx - 1]
                 session = target.get("session")
                 if session:
-                    return f"https://{AnimePaheScanner._current_host}/anime/{session}"
+                    title = str(target.get("title", "") or "").strip()
+                    return f"https://{AnimePaheScanner._current_host}/anime/{session}", title or None
         console.print("  [red]\u26a0 Invalid selection.[/red]")

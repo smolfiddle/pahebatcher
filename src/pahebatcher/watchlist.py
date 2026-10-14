@@ -359,10 +359,32 @@ def cli_remove(identifier: str, path: Path | None = None) -> None:
     console.print(f"  [green]✓ Removed[/green] '{removed.title}' [dim]({remaining} remaining)[/dim]")
 
 
-def cli_reset(identifier: str, path: Path | None = None) -> None:
+def cli_reset(
+    identifier: str | None = None, path: Path | None = None, reset_all: bool = False,
+) -> None:
     from pahebatcher.ui.console import console
 
     entries = WatchlistManager.load(path)
+    if not entries:
+        console.print("\n  [dim]No watchlist entries.[/dim]")
+        return
+    wants_all = reset_all or (identifier is not None and identifier.strip().lower() in ("all", "*"))
+    if wants_all:
+        total = sum(len(e.downloaded) for e in entries)
+        for e in entries:
+            e.downloaded = []
+        WatchlistManager.save(entries, path)
+        console.print(
+            f"  [green]✓ Reset[/green] {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}"
+            f" [dim](cleared {total} history)[/dim]",
+        )
+        return
+    if not identifier:
+        console.print(
+            "\n  [red]✗ Missing identifier.[/red]\n"
+            "  [dim]Use: pahebatcher wl reset <id>  or  pahebatcher wl reset --all[/dim]",
+        )
+        sys.exit(2)
     found = WatchlistManager.find_entry(entries, identifier)
     if not found:
         console.print(f"\n  [red]✗ No entry found for:[/red] {identifier}")
@@ -372,6 +394,111 @@ def cli_reset(identifier: str, path: Path | None = None) -> None:
     entry.downloaded = []
     WatchlistManager.save(entries, path)
     console.print(f"  [green]✓ Reset[/green] '{entry.title}' [dim](cleared {cleared} history)[/dim]")
+
+
+def record_watchlist_download(
+    session: str, title: str, ep_numbers: list[float], path: Path | None = None,
+) -> bool:
+    """Merge successful wizard-download episodes into watchlist history.
+
+    Returns True if a matching entry was found and updated.
+    Skips placeholder/404 titles so a bad scan never clobbers a real one.
+    """
+    entries = WatchlistManager.load(path)
+    for e in entries:
+        if e.session != session:
+            continue
+        if title and title != "Unknown Anime" and not _is_404_title(title):
+            e.title = title
+        seen = set(e.downloaded)
+        for n in ep_numbers:
+            fn = float(n)
+            if fn not in seen:
+                seen.add(fn)
+                e.downloaded.append(fn)
+        e.downloaded = sorted(e.downloaded)
+        e.last_checked = time.time()
+        WatchlistManager.save(entries, path)
+        return True
+    return False
+
+
+async def run_watchlist_browser() -> tuple[str | None, WatchlistEntry | None]:
+    """Interactive watchlist browser for the wizard.
+
+    Returns (url, entry) to open for download, or (None, None) to go back.
+    Check actions run inline via the existing one-shot check path.
+    """
+    from rich import box
+    from rich.panel import Panel
+    from rich.prompt import Prompt
+    from rich.rule import Rule
+    from rich.table import Table
+
+    from pahebatcher.ui.console import console
+
+    while True:
+        entries = WatchlistManager.load()
+        if not entries:
+            console.print("\n  [dim]No watchlist entries.[/dim]")
+            console.print(
+                "  [dim]Add one with:[/dim] "
+                "[brand]pahebatcher watchlist add <URL> [-q 720] [--audio eng] [-o DIR][/brand]",
+            )
+            Prompt.ask("\n  [brand]Press Enter to return[/brand]", default="")
+            return None, None
+
+        console.print()
+        console.print(Rule("[bold white] Watchlist [/bold white]", style="brand"))
+        t = Table(box=box.ROUNDED, header_style="brand.bold", title=f"watchlist ({len(entries)} series)")
+        t.add_column("#", justify="right", style="dim", width=4)
+        t.add_column("Title", ratio=1)
+        t.add_column("Quality", justify="center", width=8)
+        t.add_column("Audio", justify="center", width=6)
+        for i, e in enumerate(entries, 1):
+            t.add_row(str(i), e.title, f"{e.quality}p", audio_badge(e.audio_lang))
+        console.print(t)
+        console.print(
+            "  [dim]Saved quality/audio per entry. Full detail:[/dim]"
+            " [brand]pahebatcher wl show <#>/[/brand]",
+        )
+        cmd = Prompt.ask(
+            "  [brand][#] open  [C]heck new  [B]ack[/brand]", default="B", show_choices=False,
+        ).strip().lower()
+        if cmd in ("b", "back", ""):
+            return None, None
+        if cmd in ("c", "check"):
+            await run_watchlist_check()
+            continue
+        if not cmd.isdigit():
+            console.print("  [red]⚠ Invalid selection.[/red]")
+            continue
+        idx = int(cmd) - 1
+        if not 0 <= idx < len(entries):
+            console.print("  [red]⚠ Invalid selection.[/red]")
+            continue
+        entry = entries[idx]
+        console.print(Panel(
+            f"  [dim]Quality:[/dim]     [brand]{entry.quality}p[/brand]\n"
+            f"  [dim]Audio:[/dim]       {'SUB' if entry.audio_lang == 'jpn' else 'DUB'}"
+            f" ({entry.audio_lang})\n"
+            f"  [dim]Output:[/dim]      {entry.output_dir}\n"
+            f"  [dim]Downloaded:[/dim]  {len(entry.downloaded)} eps\n"
+            f"  [dim]URL:[/dim]         [brand]{entry.url}[/brand]",
+            title=f"[brand.bold]{entry.title}[/brand.bold]",
+            border_style="brand", box=box.ROUNDED, padding=(0, 2),
+        ))
+        sub = Prompt.ask(
+            "  [brand][D]ownload  [C]heck new  [B]ack[/brand]", default="D", show_choices=False,
+        ).strip().lower()
+        if sub in ("b", "back"):
+            continue
+        if sub in ("c", "check"):
+            await run_watchlist_check(filter_id=entry.session)
+            continue
+        if sub in ("d", "download", ""):
+            return entry.url, entry
+        console.print("  [red]⚠ Invalid selection.[/red]")
 
 
 def cli_relink(
@@ -395,9 +522,13 @@ def cli_relink(
             cm = ConfigManager()
             cm.load()
             cookie_string = str(cm.get("cookie_string"))
+            clearance_ttl = int(cm.get("clearance_ttl"))
             flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
             flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
-            solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+            solver = Solver(
+                flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+                clearance_ttl=clearance_ttl * 60,
+            )
             await solver.start()
             try:
                 if not await solver.ping():
@@ -498,9 +629,13 @@ def cli_relink(
             cm = ConfigManager()
             cm.load()
             cookie_string = str(cm.get("cookie_string"))
+            clearance_ttl = int(cm.get("clearance_ttl"))
             flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
             flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
-            solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+            solver = Solver(
+                flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+                clearance_ttl=clearance_ttl * 60,
+            )
             await solver.start()
             try:
                 if not await solver.ping():
@@ -602,16 +737,84 @@ def cli_relink(
     )
 
 
-def cli_add(url: str, quality: int | None, audio_lang: str | None, output: str | None,
+def _solver_from_config() -> Any:
+    """Build a Solver from persisted config + env. Caller must start/close it."""
+    from pahebatcher.solver import Solver
+
+    cm = ConfigManager()
+    cm.load()
+    cookie_string = str(cm.get("cookie_string"))
+    clearance_ttl = int(cm.get("clearance_ttl"))
+    flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+    flaresolverr_proxy = os.getenv("FLARESOLVERR_PROXY") or None
+    return Solver(
+        flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+        clearance_ttl=clearance_ttl * 60,
+    )
+
+
+def _discover_add_url(query: str | None) -> tuple[str | None, str | None]:
+    """Resolve a watchlist-add target via interactive search.
+
+    ``query`` is the initial search text, or None to prompt from scratch.
+    Returns (series URL, result title), with (None, None) on quit / solver down.
+    """
+    import asyncio
+
+    from pahebatcher.ui.console import console
+
+    async def _run() -> tuple[str | None, str | None]:
+        solver = _solver_from_config()
+        await solver.start()
+        try:
+            if not await solver.ping():
+                console.print("[red]✗ FlareSolverr not responding[/red]")
+                return None, None
+            from pahebatcher.ui.prompts import interactive_discovery
+
+            return await interactive_discovery(solver, "animepahe.pw", initial=query)
+        finally:
+            await solver.close()
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None and loop.is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, _run()).result()
+    return asyncio.run(_run())
+
+
+def cli_add(url: str | None, quality: int | None, audio_lang: str | None, output: str | None,
             parallel: int | None, workers: int | None, keep_temp: bool, retry: int | None,
             path: Path | None = None) -> None:
     from pahebatcher.ui.console import console
 
+    if url is None:
+        # No target given — interactive search (same UI as bare `pahebatcher`).
+        url, found_title = _discover_add_url(None)
+        if url is None:
+            console.print("\n  [dim]No anime selected.[/dim]")
+            return
+    else:
+        found_title = None
+
     try:
         host, session = parse_anime_url(url)
-    except ValueError as exc:
-        console.print(f"\n  [red]✗ Invalid URL:[/red] {exc}")
-        sys.exit(1)
+    except ValueError:
+        # Not a URL — treat it as a search query.
+        url, found_title = _discover_add_url(url)
+        if url is None:
+            console.print("\n  [dim]No anime selected.[/dim]")
+            return
+        try:
+            host, session = parse_anime_url(url)
+        except ValueError as exc:
+            console.print(f"\n  [red]✗ Invalid URL:[/red] {exc}")
+            sys.exit(1)
 
     cm = ConfigManager()
     cm.load()
@@ -640,14 +843,19 @@ def cli_add(url: str, quality: int | None, audio_lang: str | None, output: str |
         )
 
     canonical_url = f"https://{host}/anime/{session}"
-    # Try to fetch title quickly via cache without network if possible? Use session as placeholder
-    # We'll attempt to keep existing title if updating
-    title = session  # placeholder, will be updated on first check
+    # Search-discovered titles are real — keep them. Direct URL adds have no
+    # title yet, so use the session as a placeholder refreshed on first check.
+    # An existing real title always wins over either (see add_entry).
+    title = found_title.strip() if found_title and found_title.strip() else session
     existing_entries = WatchlistManager.load(path)
     for e in existing_entries:
-        if e.session == session:
+        if e.session != session:
+            continue
+        # Keep a usable existing title; a fresh real title beats a
+        # placeholder or a corrupted 404 one.
+        if e.title and e.title != e.session and not _is_404_title(e.title):
             title = e.title
-            break
+        break
 
     entry = WatchlistEntry(
         url=canonical_url,
@@ -731,11 +939,15 @@ async def run_watchlist_check(
     resolve_ahead = int(cm.get("resolve_ahead"))
     cache_ttl_watch = 0  # force fresh for watchlist check
     cookie_string = str(cm.get("cookie_string"))
+    clearance_ttl = int(cm.get("clearance_ttl"))
 
     console.print(Rule("[bold white] Checking Prerequisites [/bold white]", style="brand"))
     console.print(f"  [dim]FlareSolverr:[/dim] {flaresolverr_url}  ", end="")
 
-    solver = Solver(flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string)
+    solver = Solver(
+        flaresolverr_url, proxy=flaresolverr_proxy, user_cookies=cookie_string,
+        clearance_ttl=clearance_ttl * 60,
+    )
     await solver.start()
     try:
         if not await solver.ping():
